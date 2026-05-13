@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Poppins:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --color-emerald-950: #022c22;
+}
+
+body {
+  @apply font-sans bg-[#020617] text-slate-200 antialiased overflow-hidden;
+}
+
+/* Glassmorphism 2.0 */
+.glass {
+  @apply bg-white/5 backdrop-blur-2xl border border-white/10 shadow-[0_8px_32px_0_rgba(0,0,0,0.37)];
+}
+
+.glass-emerald {
+  @apply bg-emerald-500/10 backdrop-blur-2xl border border-emerald-500/20 shadow-[0_8px_32px_0_rgba(16,185,129,0.1)];
+}
+
+.glass-card {
+  @apply bg-slate-900/40 backdrop-blur-xl border border-white/5 shadow-xl hover:border-white/10 transition-all duration-300;
+}
+
+/* Custom scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-emerald-500/10 rounded-full hover:bg-emerald-500/30 transition-colors;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.5; filter: blur(40px); }
+  50% { opacity: 0.8; filter: blur(60px); }
+}
+
+.pulse-glow {
+  animation: pulse-glow 4s ease-in-out infinite;
+}
+
+/* Mobile Bottom Nav Spacer */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}

@@ -1,0 +1,6 @@
+{
+  "name": "VerdeGrana Pro",
+  "description": "Smart AI-assisted budget management system with BRL currency and hybrid mobile/desktop UI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["storage", "ai"]
+}

@@ -26,37 +26,54 @@ import {
   Home,
   FileJson,
   BarChart2,
+  Share2,
   ArrowLeft,
   ArrowRight,
   UserCheck,
   Folder,
   User,
   Mail,
-  Ghost
+  Ghost,
+  Minus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell,
-  LineChart,
-  Line,
-  AreaChart,
-  Area,
-  Legend
-} from 'recharts';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  PointElement,
+  LineElement,
+  ArcElement,
+  Title,
+  Tooltip as ChartTooltip,
+  Legend as ChartLegend,
+  Filler,
+  Scale
+} from 'chart.js';
+import { Bar as ChartBar, Line as ChartLine, Doughnut } from 'react-chartjs-2';
+import zoomPlugin from 'chartjs-plugin-zoom';
+import 'hammerjs';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  PointElement,
+  LineElement,
+  ArcElement,
+  Title,
+  ChartTooltip,
+  ChartLegend,
+  Filler,
+  zoomPlugin
+);
+
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Toaster, toast } from 'sonner';
-import { initDB, getState, saveState } from './db';
+import { initDB, getState, saveState, clearState } from './db';
 
 // --- Utils ---
 function cn(...inputs: ClassValue[]) {
@@ -95,6 +112,12 @@ const DEFAULT_CATEGORIES = [
 
 type Tab = 'reports' | 'transactions' | 'ai' | 'categories' | 'settings' | 'about';
 
+const VIBRANT_PALETTE = [
+  '#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#eab308', 
+  '#06b6d4', '#10b981', '#f43f5e', '#6366f1', '#a855f7',
+  '#ef4444', '#14b8a6', '#f59e0b', '#84cc16'
+];
+
 interface DateFilter {
   month: number;
   year: number;
@@ -107,6 +130,379 @@ interface AnalyticsConfig {
   granularity: 'day' | 'month' | 'year';
   compareCategories: string[];
 }
+
+const CategoryDonut = ({ data, colorMode }: { 
+  data: any[], 
+  colorMode: 'unique' | 'flow'
+}) => {
+  const chartData = {
+    labels: data.map(d => d.name),
+    datasets: [{
+      data: data.map(d => d.value),
+      backgroundColor: data.map((d, i) => {
+        if (colorMode === 'unique') {
+          return VIBRANT_PALETTE[i % VIBRANT_PALETTE.length];
+        }
+        const dominantType = d.income >= d.expense ? 'entrada' : 'saída';
+        // Dynamically varying shades/opacities for unique identifies in Flow Mode
+        const hue = dominantType === 'entrada' ? 142 : 350; // Greenish vs Reddish
+        const lightness = 45 + (i % 5) * 7;
+        const opacity = 0.6 + (i % 3) * 0.1;
+        return `hsla(${hue}, 70%, ${lightness}%, ${opacity})`;
+      }),
+      borderColor: 'rgba(255,255,255,0.05)',
+      borderWidth: 2,
+    }]
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#0f172a',
+        titleFont: { size: 14, weight: 'bold' as const },
+        bodyFont: { size: 12 },
+        padding: 12,
+        cornerRadius: 12,
+        displayColors: false,
+        callbacks: {
+           label: (context: any) => ` ${formatCurrency(context.raw)}`
+        }
+      },
+      zoom: {
+        pan: { enabled: true, mode: 'xy' as const },
+        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' as const }
+      }
+    },
+    cutout: '70%'
+  };
+
+  return <Doughnut data={chartData} options={options} />;
+};
+
+const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: any[], type?: 'bar' | 'area', isPerformance?: boolean, onPointClick?: (date: string) => void }) => {
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const chartRef = useRef<any>(null);
+
+  const handleZoomIn = () => {
+    setZoomLevel(prev => prev * 1.2);
+    setTimeout(() => chartRef.current?.resize(), 50);
+  };
+
+  const handleZoomOut = () => {
+    setZoomLevel(prev => Math.max(1, prev * 0.8));
+    setTimeout(() => chartRef.current?.resize(), 50);
+  };
+
+  const handleReset = () => {
+    setZoomLevel(1);
+    setTimeout(() => chartRef.current?.resize(), 50);
+  };
+
+  const maxVal = Math.max(...data.flatMap(d => [d.income, d.expense]), 100);
+  
+  const chartData = {
+    labels: data.map(d => d.name),
+    datasets: [
+      {
+        label: 'Receitas',
+        data: data.map(d => Math.abs(d.income)),
+        backgroundColor: 'rgba(16, 185, 129, 0.8)',
+        borderColor: 'rgba(16, 185, 129, 1)',
+        borderWidth: 1,
+        borderRadius: 4,
+        barPercentage: 0.8,
+        categoryPercentage: 0.8,
+        grouped: false,
+      },
+      {
+        label: 'Despesas',
+        data: data.map(d => Math.abs(d.expense)),
+        backgroundColor: 'rgba(244, 63, 94, 0.8)',
+        borderColor: 'rgba(244, 63, 94, 1)',
+        borderWidth: 1,
+        borderRadius: 4,
+        barPercentage: 0.8,
+        categoryPercentage: 0.8,
+        grouped: false,
+      }
+    ]
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false as const,
+    onClick: (e: any, elements: any) => {
+      if (elements.length > 0 && onPointClick) {
+        const index = elements[0].index;
+        onPointClick(data[index].fullDate);
+      }
+    },
+    interaction: {
+      mode: 'index' as const,
+      intersect: false,
+    },
+    plugins: {
+      legend: {
+        display: false
+      },
+      tooltip: {
+        backgroundColor: 'rgba(15, 23, 42, 0.95)',
+        padding: 16,
+        cornerRadius: 16,
+        bodyFont: { size: 12, weight: 'bold' as const },
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+        borderWidth: 1,
+        displayColors: false,
+        callbacks: {
+           title: () => '',
+           label: () => '', 
+           beforeBody: (context: any) => {
+             const index = context[0].dataIndex;
+             const item = data[index];
+             const net = item.income - item.expense;
+             return [
+               `Receitas: ${formatCurrency(item.income)}`,
+               `Despesas: ${formatCurrency(item.expense)}`,
+               `Líquido: ${formatCurrency(net)}`
+             ];
+           }
+        }
+      }
+    },
+    scales: {
+      x: { 
+        stacked: false,
+        grid: { 
+          color: 'rgba(255,255,255,0.05)', 
+          lineWidth: 1,
+          drawBorder: true,
+        }, 
+        ticks: { 
+          color: '#64748b', 
+          font: { size: 10, weight: 'bold' as const },
+          maxRotation: 0,
+          autoSkip: false,
+          padding: 10,
+          callback: function(val: any, index: number) {
+            const currentItem = data[val];
+            if (!currentItem) return '';
+            
+            const date = new Date(currentItem.fullDate);
+            const month = date.toLocaleString('pt-BR', { month: 'short' }).replace('.', '');
+            const day = date.getDate();
+
+            if (index === 0) return `${month} ${day}`;
+            
+            const prevItem = data[val - 1];
+            if (!prevItem) return `${month} ${day}`;
+            
+            const prevDate = new Date(prevItem.fullDate);
+            if (date.getMonth() !== prevDate.getMonth()) {
+                return `${month} ${day}`;
+            }
+            
+            return day.toString();
+          }
+        } 
+      },
+      y: { 
+        stacked: false,
+        min: 0,
+        max: maxVal * 1.2,
+        grid: { color: 'rgba(255,255,255,0.03)' }, 
+        ticks: { 
+          color: '#475569', 
+          font: { size: 10 },
+          callback: (val: any) => formatCurrency(val)
+        } 
+      }
+    }
+  };
+
+  const innerWidth = zoomLevel === 1 ? '100%' : `${zoomLevel * 200}%`;
+  const innerHeight = zoomLevel === 1 ? '300px' : `${zoomLevel * 500}px`;
+
+  return (
+    <div className="w-full h-full relative group flex flex-col">
+      <div className="flex justify-end items-center gap-2 mb-2">
+         <div className="flex bg-slate-900/60 backdrop-blur-xl p-1 rounded-xl border border-white/10">
+            <button 
+              onClick={handleZoomIn}
+              className="w-8 h-8 flex items-center justify-center hover:bg-white/10 rounded-lg text-white transition-all active:scale-95"
+              title="Esticar (+)"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={handleZoomOut}
+              className="w-8 h-8 flex items-center justify-center hover:bg-white/10 rounded-lg text-white transition-all active:scale-95"
+              title="Achatar (-)"
+            >
+              <Minus className="w-4 h-4" />
+            </button>
+            <div className="w-[1px] h-6 my-auto bg-white/10 mx-1" />
+            <button 
+              onClick={handleReset}
+              className="px-3 h-8 flex items-center gap-2 hover:bg-white/10 rounded-lg text-[9px] font-black uppercase text-slate-300 transition-all"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Ajustar Automaticamente
+            </button>
+         </div>
+      </div>
+
+      <div className="flex-1 overflow-auto custom-scrollbar relative bg-black/10 rounded-2xl border border-white/5 shadow-inner">
+        <div 
+          style={{ 
+            width: innerWidth, 
+            height: innerHeight,
+            minWidth: zoomLevel > 1 ? `${data.length * 50}px` : '100%',
+            transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)'
+          }}
+          className="relative"
+        >
+          {isPerformance ? (
+             <ChartLine 
+               ref={chartRef} 
+               data={{
+                 ...chartData,
+                 datasets: chartData.datasets.map(ds => ({
+                   ...ds,
+                   fill: true,
+                   tension: 0.4,
+                   pointRadius: 4,
+                   pointHoverRadius: 6,
+                   backgroundColor: ds.label === 'Receitas' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(244, 63, 94, 0.1)',
+                 }))
+               }} 
+               options={options} 
+             />
+          ) : (
+            <ChartBar ref={chartRef} data={chartData} options={options} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ComparisonChart = ({ 
+  data, 
+  colorMode,
+  setColorMode,
+  viewMode,
+  setViewMode,
+  title 
+}: { 
+  data: any[], 
+  colorMode: 'unique' | 'flow',
+  setColorMode: (m: 'unique' | 'flow') => void,
+  viewMode: 'tudo' | 'receitas' | 'despesas',
+  setViewMode: (m: 'tudo' | 'receitas' | 'despesas') => void,
+  title: string
+}) => {
+  return (
+    <CategoryDonutSection 
+      data={data}
+      colorMode={colorMode}
+      setColorMode={setColorMode}
+      viewMode={viewMode}
+      setViewMode={setViewMode}
+      title={title}
+    />
+  );
+};
+
+const CategoryDonutSection = ({ 
+  data, 
+  colorMode, 
+  setColorMode, 
+  viewMode, 
+  setViewMode,
+  title
+}: { 
+  data: any[], 
+  colorMode: 'unique' | 'flow',
+  setColorMode?: (m: 'unique' | 'flow') => void,
+  viewMode: 'tudo' | 'receitas' | 'despesas',
+  setViewMode?: (m: 'tudo' | 'receitas' | 'despesas') => void,
+  title: string
+}) => {
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex flex-col gap-4 mb-6">
+        <div className="flex justify-between items-center">
+          <h3 className="font-black text-lg uppercase tracking-tighter">{title}</h3>
+          {setColorMode && (
+            <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+                <button 
+                  onClick={() => setColorMode('unique')}
+                  className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", colorMode === 'unique' ? "bg-white/10 text-white" : "text-slate-500")}
+                >
+                  COLORIDO
+                </button>
+                <button 
+                  onClick={() => setColorMode('flow')}
+                  className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", colorMode === 'flow' ? "bg-white/10 text-white" : "text-slate-500")}
+                >
+                  FLUXO
+                </button>
+            </div>
+          )}
+        </div>
+        
+        {setViewMode && (
+          <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
+              {(['tudo', 'receitas', 'despesas'] as const).map(m => (
+                <button 
+                  key={m}
+                  onClick={() => setViewMode(m)}
+                  className={cn(
+                    "flex-1 py-2 text-[10px] font-black rounded-xl transition-all", 
+                    viewMode === m ? (m === 'tudo' ? "bg-white/10 text-white" : m === 'receitas' ? "bg-emerald-500 text-white" : "bg-rose-500 text-white") : "text-slate-500"
+                  )}
+                >
+                  {m.toUpperCase()}
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
+      
+      <div className="flex-1 min-h-[250px] relative">
+        <CategoryDonut data={data} colorMode={colorMode} />
+      </div>
+
+      <div className="mt-4 pt-4 border-t border-white/5 space-y-2 overflow-y-auto max-h-32 custom-scrollbar pr-2">
+         <div className="text-[10px] uppercase font-black text-slate-500 mb-2 tracking-widest">Mapa de Categorias (%)</div>
+         <div className="grid grid-cols-1 gap-1.5">
+            {data.sort((a, b) => b.value - a.value).map((cat, i) => {
+               const dominantType = cat.income >= cat.expense ? 'entrada' : 'saída';
+               let fill = colorMode === 'unique' ? VIBRANT_PALETTE[i % VIBRANT_PALETTE.length] : (dominantType === 'entrada' ? '#10b981' : '#f43f5e');
+
+               return (
+                 <div key={cat.name} className="flex items-center justify-between text-[10px] bg-white/2 p-2 rounded-xl border border-white/5">
+                   <div className="flex items-center gap-2">
+                     <div className="w-2 h-2 rounded-full" style={{ backgroundColor: fill, opacity: colorMode === 'unique' ? 1 : 0.4 + (i * 0.1) }} />
+                     <span className="font-bold text-slate-400 truncate max-w-[120px] tracking-tight">{cat.name}</span>
+                   </div>
+                   <div className="flex items-center gap-2">
+                      <span className="font-black text-white">{formatCurrency(cat.value)}</span>
+                      <span className="text-[8px] text-slate-600 font-bold">{( (cat.value / (data.reduce((a,b)=>a+b.value, 0) || 1)) * 100).toFixed(0)}%</span>
+                   </div>
+                 </div>
+               );
+            })}
+         </div>
+      </div>
+    </div>
+  );
+};
+
 let dbInstance: any = null;
 
 export default function App() {
@@ -146,6 +542,8 @@ export default function App() {
   const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [donutType, setDonutType] = useState<'saída' | 'entrada'>('saída');
+  const [donutViewMode, setDonutViewMode] = useState<'tudo' | 'receitas' | 'despesas'>('despesas');
+  const [selectedPeriod, setSelectedPeriod] = useState<string | null>(null);
   const [isChartReady, setIsChartReady] = useState(false);
   const [wipeStep, setWipeStep] = useState(0);
   const [wipeConfirmText, setWipeConfirmText] = useState('');
@@ -282,7 +680,7 @@ export default function App() {
       // @ts-ignore
       const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
-        await writeToFile(handle, { transactions, categories });
+        await writeToFile(dirHandle, { transactions, categories });
       } else {
         setIsFolderPermissionMissing(true);
       }
@@ -424,47 +822,136 @@ export default function App() {
     return { total, income, expenses, balanceColor };
   }, [currentTransactions]);
 
-  const chartData = useMemo(() => {
-    if (analyticsConfig.granularity === 'month') {
-      const lastMonths = Array.from({ length: 6 }).map((_, i) => {
-        const d = new Date();
-        d.setMonth(d.getMonth() - i);
-        return { month: d.getMonth() + 1, year: d.getFullYear(), label: d.toLocaleString('pt-BR', { month: 'short' }) };
-      }).reverse();
+  const fluxoData = useMemo(() => {
+    if (transactions.length === 0) return [];
 
-      return lastMonths.map(m => {
-        const income = transactions.filter(t => {
-          const d = new Date(t.date);
-          return t.type === 'entrada' && (d.getMonth() + 1) === m.month && d.getFullYear() === m.year;
-        }).reduce((acc, t) => acc + t.value, 0);
-        
-        const expense = transactions.filter(t => {
-          const d = new Date(t.date);
-          return t.type === 'saída' && (d.getMonth() + 1) === m.month && d.getFullYear() === m.year;
-        }).reduce((acc, t) => acc + t.value, 0);
-        
-        return { name: m.label, income, expense };
-      });
-    } else if (analyticsConfig.granularity === 'day') {
-      const lastDays = Array.from({ length: 7 }).map((_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        return { date: d.toISOString().split('T')[0], label: d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) };
-      }).reverse();
+    const dates = transactions.map(t => new Date(t.date).getTime());
+    const minD = new Date(Math.min(...dates));
+    const maxD = new Date(Math.max(...dates));
 
-      return lastDays.map(d => {
-        const income = transactions.filter(t => t.type === 'entrada' && t.date === d.date).reduce((acc, t) => acc + t.value, 0);
-        const expense = transactions.filter(t => t.type === 'saída' && t.date === d.date).reduce((acc, t) => acc + t.value, 0);
-        return { name: d.label, income, expense };
-      });
+    const results = [];
+    
+    if (analyticsConfig.granularity === 'day') {
+      const start = new Date(minD);
+      start.setDate(start.getDate() - 10);
+      const end = new Date(maxD);
+      end.setDate(end.getDate() + 10);
+
+      let curr = new Date(start);
+      while (curr <= end) {
+        const dStr = curr.toISOString().split('T')[0];
+        const income = transactions.filter(t => t.type === 'entrada' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
+        const expense = transactions.filter(t => t.type === 'saída' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
+        
+        results.push({ 
+            name: curr.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }), 
+            fullDate: curr.toISOString(),
+            income, 
+            expense 
+        });
+        curr.setDate(curr.getDate() + 1);
+      }
     } else {
-      const lastYears = [2024, 2025, 2026];
-      return lastYears.map(y => {
-        const income = transactions.filter(t => t.type === 'entrada' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
-        const expense = transactions.filter(t => t.type === 'saída' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
-        return { name: y.toString(), income, expense };
-      });
+      // Just normal monthly/yearly without specific day padding logic mentioned
+      const start = analyticsConfig.granularity === 'month' ? new Date(minD.getFullYear(), minD.getMonth(), 1) : new Date(minD.getFullYear(), 0, 1);
+      const end = analyticsConfig.granularity === 'month' ? new Date(maxD.getFullYear(), maxD.getMonth(), 1) : new Date(maxD.getFullYear(), 0, 1);
+
+      let curr = new Date(start);
+      while (curr <= end) {
+        let income = 0;
+        let expense = 0;
+        let name = '';
+        let fullDate = curr.toISOString();
+
+        if (analyticsConfig.granularity === 'month') {
+          const m = curr.getMonth();
+          const y = curr.getFullYear();
+          income = transactions.filter(t => {
+            const d = new Date(t.date);
+            return t.type === 'entrada' && d.getMonth() === m && d.getFullYear() === y;
+          }).reduce((acc, t) => acc + t.value, 0);
+          expense = transactions.filter(t => {
+            const d = new Date(t.date);
+            return t.type === 'saída' && d.getMonth() === m && d.getFullYear() === y;
+          }).reduce((acc, t) => acc + t.value, 0);
+          name = curr.toLocaleString('pt-BR', { month: 'short' });
+          curr.setMonth(curr.getMonth() + 1);
+        } else {
+          const y = curr.getFullYear();
+          income = transactions.filter(t => t.type === 'entrada' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+          expense = transactions.filter(t => t.type === 'saída' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+          name = y.toString();
+          curr.setFullYear(curr.getFullYear() + 1);
+        }
+        results.push({ name, fullDate, income, expense });
+      }
     }
+    return results;
+  }, [transactions, analyticsConfig.granularity]);
+
+  const tendenciaData = useMemo(() => {
+    if (transactions.length === 0) return [];
+
+    const dates = transactions.map(t => new Date(t.date).getTime());
+    const minD = new Date(Math.min(...dates));
+    const maxD = new Date(Math.max(...dates));
+
+    const results = [];
+    
+    if (analyticsConfig.granularity === 'day') {
+      const start = new Date(minD);
+      const end = new Date(maxD);
+
+      let curr = new Date(start);
+      while (curr <= end) {
+        const dStr = curr.toISOString().split('T')[0];
+        const income = transactions.filter(t => t.type === 'entrada' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
+        const expense = transactions.filter(t => t.type === 'saída' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
+        
+        results.push({ 
+            name: curr.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }), 
+            fullDate: curr.toISOString(),
+            income, 
+            expense 
+        });
+        curr.setDate(curr.getDate() + 1);
+      }
+    } else {
+      // Logic without padding
+      const start = analyticsConfig.granularity === 'month' ? new Date(minD.getFullYear(), minD.getMonth(), 1) : new Date(minD.getFullYear(), 0, 1);
+      const end = analyticsConfig.granularity === 'month' ? new Date(maxD.getFullYear(), maxD.getMonth(), 1) : new Date(maxD.getFullYear(), 0, 1);
+
+      let curr = new Date(start);
+      while (curr <= end) {
+        let income = 0;
+        let expense = 0;
+        let name = '';
+        let fullDate = curr.toISOString();
+
+        if (analyticsConfig.granularity === 'month') {
+          const m = curr.getMonth();
+          const y = curr.getFullYear();
+          income = transactions.filter(t => {
+            const d = new Date(t.date);
+            return t.type === 'entrada' && d.getMonth() === m && d.getFullYear() === y;
+          }).reduce((acc, t) => acc + t.value, 0);
+          expense = transactions.filter(t => {
+            const d = new Date(t.date);
+            return t.type === 'saída' && d.getMonth() === m && d.getFullYear() === y;
+          }).reduce((acc, t) => acc + t.value, 0);
+          name = curr.toLocaleString('pt-BR', { month: 'short' });
+          curr.setMonth(curr.getMonth() + 1);
+        } else {
+          const y = curr.getFullYear();
+          income = transactions.filter(t => t.type === 'entrada' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+          expense = transactions.filter(t => t.type === 'saída' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+          name = y.toString();
+          curr.setFullYear(curr.getFullYear() + 1);
+        }
+        results.push({ name, fullDate, income, expense });
+      }
+    }
+    return results;
   }, [transactions, analyticsConfig.granularity]);
 
   const categoryData = useMemo(() => {
@@ -479,13 +966,19 @@ export default function App() {
       }
     });
 
-    return Object.keys({ ...expByCat, ...incByCat }).map(name => ({
-      name,
-      expense: expByCat[name] || 0,
-      income: incByCat[name] || 0,
-      value: expByCat[name] || 0 // Keep value for pie compatibility
-    }));
-  }, [currentTransactions]);
+    return Object.keys({ ...expByCat, ...incByCat })
+      .filter(name => {
+        if (donutViewMode === 'receitas') return (incByCat[name] || 0) > 0;
+        if (donutViewMode === 'despesas') return (expByCat[name] || 0) > 0;
+        return true;
+      })
+      .map(name => ({
+        name,
+        expense: expByCat[name] || 0,
+        income: incByCat[name] || 0,
+        value: donutViewMode === 'receitas' ? (incByCat[name] || 0) : (donutViewMode === 'despesas' ? (expByCat[name] || 0) : (incByCat[name] || 0) + (expByCat[name] || 0))
+      }));
+  }, [currentTransactions, donutViewMode]);
 
   const filteredTransactions = useMemo(() => {
     return currentTransactions.filter(t => {
@@ -500,29 +993,11 @@ export default function App() {
     });
   }, [currentTransactions, searchTerm, categoryFilters, sortConfig]);
 
-   const comparisonData = useMemo(() => {
-    if (analyticsConfig.compareCategories.length === 0) return [];
-    
-    // Last points for the selected categories
-    const points = chartData.map(d => d.name);
-    return points.map(p => {
-       const item: any = { name: p };
-       analyticsConfig.compareCategories.forEach(cat => {
-          const catTransactions = transactions.filter(t => t.category === cat);
-          
-          const filtered = catTransactions.filter(t => {
-            const d = new Date(t.date);
-            if (analyticsConfig.granularity === 'month') return d.toLocaleString('pt-BR', { month: 'short' }) === p;
-            if (analyticsConfig.granularity === 'day') return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) === p;
-            return d.getFullYear().toString() === p;
-          });
-
-          item[`${cat}_expense`] = filtered.filter(t => t.type === 'saída').reduce((acc, it) => acc + it.value, 0);
-          item[`${cat}_income`] = filtered.filter(t => t.type === 'entrada').reduce((acc, it) => acc + it.value, 0);
-       });
-       return item;
-    });
-  }, [transactions, analyticsConfig.compareCategories, chartData, analyticsConfig.granularity]);
+  const periodDetailsTransactions = useMemo(() => {
+    if (!selectedPeriod) return [];
+    const date = new Date(selectedPeriod).toISOString().split('T')[0];
+    return transactions.filter(t => t.date === date);
+  }, [transactions, selectedPeriod]);
 
   const exportData = () => {
     const data = JSON.stringify({ transactions, categories }, null, 2);
@@ -566,8 +1041,7 @@ export default function App() {
           className="absolute bottom-10 text-center max-w-xs"
         >
            <p className="text-[10px] text-slate-600 font-medium leading-relaxed uppercase tracking-widest">
-            Gerado por Luiz Gustavo Andrade Santos, app feito 100% com IA. <br/>
-            Todos os direitos reservados ao Google Ai Studio.
+            Gerado por Luiz Gustavo Andrade Santos, app feito 100% com IA. Todos os direitos reservados ao Google Ai Studio.
           </p>
         </motion.div>
       </div>
@@ -872,63 +1346,32 @@ export default function App() {
                 ) : (
                   <>
                     {analyticsConfig.compareCategories.length > 0 && (
-                      <Card className="col-span-12 p-8 h-[450px] relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4">
-                          <button 
-                            onClick={() => setAnalyticsConfig(p => ({ ...p, compareCategories: [] }))}
-                            className="p-2 bg-white/5 hover:bg-white/10 rounded-full text-slate-500 transition-colors"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                        <h3 className="font-bold text-lg mb-6 text-white tracking-tight flex items-center gap-3 uppercase">
-                           <BarChart2 className="w-5 h-5 text-emerald-400" /> Detalhado por Categoria
-                        </h3>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={comparisonData}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                            <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                            <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                            <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            <Legend verticalAlign="top" height={36}/>
-                            {analyticsConfig.compareCategories.map((cat, i) => (
-                              <React.Fragment key={cat}>
-                                <Bar 
-                                  dataKey={`${cat}_expense`} 
-                                  name={`${cat} (Despesa)`}
-                                  fill="#f43f5e" 
-                                  fillOpacity={0.8 - (i * 0.1)}
-                                  radius={[4, 4, 0, 0]} 
-                                />
-                                <Bar 
-                                  dataKey={`${cat}_income`} 
-                                  name={`${cat} (Receita)`}
-                                  fill="#10b981" 
-                                  fillOpacity={0.8 - (i * 0.1)}
-                                  radius={[4, 4, 0, 0]} 
-                                />
-                              </React.Fragment>
-                            ))}
-                          </BarChart>
-                        </ResponsiveContainer>
+                      <Card className="col-span-12 lg:col-span-4 h-[550px] p-8 relative overflow-hidden flex flex-col">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/5 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2" />
+                        <ComparisonChart 
+                          title="Comparação de Categorias"
+                          data={categoryData.filter(c => analyticsConfig.compareCategories.includes(c.name))}
+                          colorMode={donutColorMode}
+                          setColorMode={setDonutColorMode}
+                          viewMode={donutViewMode}
+                          setViewMode={setDonutViewMode}
+                        />
                       </Card>
                     )}
 
-                    <Card className="col-span-12 lg:col-span-8 h-[450px] p-8 relative overflow-hidden">
+                    {/* ROW 1: LANÇAMENTOS */}
+                    <Card className="col-span-12 h-[500px] p-8 relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2" />
-                      <h3 className="font-bold text-lg mb-6 uppercase tracking-tighter">Fluxo de Caixa Consolidado</h3>
-                      {isChartReady ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                            <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                            <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                            <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            <Legend verticalAlign="top" height={36}/>
-                            <Bar dataKey="income" name="Receita" fill="#10b981" radius={[6, 6, 0, 0]} />
-                            <Bar dataKey="expense" name="Despesa" fill="#f43f5e" radius={[6, 6, 0, 0]} />
-                          </BarChart>
-                        </ResponsiveContainer>
+                      <div className="flex justify-between items-center mb-6">
+                        <h3 className="font-bold text-lg uppercase tracking-tighter">Lançamentos</h3>
+                      </div>
+                     {isChartReady ? (
+                        <div className="w-full h-full relative">
+                           <TimelineChart 
+                              data={fluxoData} 
+                              onPointClick={(date) => setSelectedPeriod(date)}
+                           />
+                        </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
                           <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
@@ -936,114 +1379,79 @@ export default function App() {
                       )}
                     </Card>
 
-                    <Card className="col-span-12 lg:col-span-4 h-[450px] p-8 relative overflow-hidden flex flex-col">
-                      <div className="absolute bottom-0 left-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full translate-y-1/2 -translate-x-1/2" />
-                      <div className="flex flex-col gap-4 mb-6">
-                        <div className="flex justify-between items-center">
-                          <h3 className="font-black text-lg uppercase tracking-tighter">Mapa Geométrico</h3>
-                           <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
-                              <button 
-                                onClick={() => setDonutColorMode('unique')}
-                                className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'unique' ? "bg-white/10 text-white" : "text-slate-500")}
-                              >
-                                ELEGANT
-                              </button>
-                              <button 
-                                onClick={() => setDonutColorMode('flow')}
-                                className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'flow' ? "bg-white/10 text-white" : "text-slate-500")}
-                              >
-                                VIBRANT
-                              </button>
-                           </div>
+                    {/* ROW 2: FLUXO DE CAIXA */}
+                    <Card className="col-span-12 p-10 h-[450px] relative overflow-hidden">
+                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+                      <div className="flex justify-between items-center mb-8">
+                        <h3 className="font-black text-lg uppercase tracking-tighter">Fluxo de Caixa</h3>
+                      </div>
+                     {isChartReady ? (
+                        <div className="w-full h-full relative">
+                          <TimelineChart data={tendenciaData} isPerformance={true} />
                         </div>
-                        
-                        <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
-                            <button 
-                              onClick={() => setDonutType('saída')}
-                              className={cn("flex-1 py-2 text-[10px] font-black rounded-xl transition-all", donutType === 'saída' ? "bg-rose-500 text-white" : "text-slate-500")}
-                            >
-                              DESPESAS
-                            </button>
-                            <button 
-                              onClick={() => setDonutType('entrada')}
-                              className={cn("flex-1 py-2 text-[10px] font-black rounded-xl transition-all", donutType === 'entrada' ? "bg-emerald-500 text-white" : "text-slate-500")}
-                            >
-                              RECEITAS
-                            </button>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
                         </div>
-                      </div>
-                      
-                      <div className="flex-1 min-h-0">
-                        {isChartReady ? (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                              <Pie
-                                data={categoryData}
-                                cx="50%" cy="50%"
-                                innerRadius={70} outerRadius={100}
-                                paddingAngle={2} 
-                                dataKey={donutType === 'saída' ? 'expense' : 'income'}
-                                stroke="none"
-                              >
-                                {categoryData.map((entry, i) => (
-                                  <Cell 
-                                    key={i} 
-                                    fill={donutColorMode === 'unique' 
-                                      ? (donutType === 'saída' ? ['#f43f5e', '#e11d48', '#be123c', '#9f1239'][i % 4] : ['#10b981', '#059669', '#047857', '#065f46'][i % 4])
-                                      : (donutType === 'saída' ? '#f43f5e' : '#10b981')
-                                    } 
-                                    fillOpacity={donutColorMode === 'unique' ? 1 : (1 - (i * 0.1))}
-                                  />
-                                ))}
-                              </Pie>
-                              <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            </PieChart>
-                          </ResponsiveContainer>
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="mt-4 space-y-2 overflow-y-auto max-h-32 custom-scrollbar pr-2">
-                         {categoryData.filter(c => donutType === 'saída' ? c.expense > 0 : c.income > 0).sort((a, b) => (donutType === 'saída' ? b.expense - a.expense : b.income - a.income)).map((cat, i) => (
-                           <div key={cat.name} className="flex items-center justify-between text-[10px] bg-white/5 p-2 rounded-xl border border-white/5">
-                             <div className="flex items-center gap-2">
-                               <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: donutType === 'saída' ? '#f43f5e' : '#10b981', opacity: donutColorMode === 'unique' ? 0.3 + (i * 0.1) : 1 - (i * 0.1) }} />
-                               <span className="font-bold text-slate-400 truncate max-w-[100px] tracking-tight">{cat.name}</span>
-                             </div>
-                             <span className="font-black text-white">{formatCurrency(donutType === 'saída' ? cat.expense : cat.income)}</span>
-                           </div>
-                         ))}
-                      </div>
+                      )}
                     </Card>
 
-                    <Card className="col-span-12 p-10 h-[400px] relative overflow-hidden">
-                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
-                      <h3 className="font-black text-lg mb-8 uppercase tracking-tighter">Tendência & Performance</h3>
+                    {/* ROW 3: DETALHES (DYNAMIC) */}
+                    <AnimatePresence>
+                      {selectedPeriod && (
+                        <Card id="detalhes-periodo-container" className="col-span-12 p-8 border-emerald-500/20 bg-emerald-500/5">
+                          <div className="flex justify-between items-center mb-6">
+                            <div>
+                               <h3 className="font-black text-xl text-white uppercase tracking-tighter">Detalhes do Dia</h3>
+                               <p className="text-emerald-500 text-xs font-bold font-mono">{new Date(selectedPeriod).toLocaleDateString('pt-BR', { dateStyle: 'full' })}</p>
+                            </div>
+                            <button 
+                              onClick={() => setSelectedPeriod(null)}
+                              className="p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors text-slate-400 hover:text-white"
+                            >
+                              <X className="w-5 h-5" />
+                            </button>
+                          </div>
+
+                          <div className="space-y-3">
+                            {periodDetailsTransactions.map(t => (
+                              <div key={t.id} className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-emerald-500/30 transition-all">
+                                <div className="flex items-center gap-4">
+                                  <div className={cn("p-3 rounded-xl", t.type === 'entrada' ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500")}>
+                                    {t.type === 'entrada' ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+                                  </div>
+                                  <div>
+                                    <p className="font-bold text-white">{t.desc}</p>
+                                    <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">{t.category}</p>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <p className={cn("font-black", t.type === 'entrada' ? "text-emerald-400" : "text-rose-400")}>
+                                    {t.type === 'entrada' ? '+' : '-'} {formatCurrency(t.value)}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                            {periodDetailsTransactions.length === 0 && (
+                              <p className="text-center py-6 text-slate-500 font-medium">Nenhum lançamento encontrado para esta data.</p>
+                            )}
+                          </div>
+                        </Card>
+                      )}
+                    </AnimatePresence>
+
+                    {/* ROW 4: DISTRIBUIÇÃO GERAL */}
+                    <Card className="col-span-12 p-10 relative overflow-hidden flex flex-col min-h-[500px]">
+                      <div className="absolute bottom-0 left-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full translate-y-1/2 -translate-x-1/2" />
                       {isChartReady ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={chartData}>
-                            <defs>
-                              <linearGradient id="colorInc" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
-                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                              </linearGradient>
-                              <linearGradient id="colorExp" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
-                                <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                            <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                            <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            <Legend verticalAlign="top" height={36}/>
-                            <Area type="monotone" dataKey="income" name="Performance (Receita)" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorInc)" />
-                            <Area type="monotone" dataKey="expense" name="Carga (Despesa)" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorExp)" />
-                          </AreaChart>
-                        </ResponsiveContainer>
+                        <CategoryDonutSection 
+                          title="Distribuição Geral"
+                          data={categoryData}
+                          colorMode={donutColorMode}
+                          setColorMode={setDonutColorMode}
+                          viewMode={donutViewMode}
+                          setViewMode={setDonutViewMode}
+                        />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
                           <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
@@ -1222,21 +1630,32 @@ Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "
                     
                     <button 
                       onClick={() => {
-                        const topCats = categoryData.slice(0, 3).map(c => `${c.name}: ${formatCurrency(c.value)}`).join(', ');
-                        const reportPrompt = `Analise estes dados financeiros do VerdeGrana e forneça um relatório detalhado com insights de economia e saúde financeira:
+                        const topCats = categoryData.slice(0, 5).map(c => `${c.name}: ${formatCurrency(c.value)}`).join(', ');
+                        const reportPrompt = `Relatório Financeiro VerdeGrana - Saúde Financeira Master
                         
-Saldo Atual: ${formatCurrency(stats.total)}
-Total Receitas (Mês): ${formatCurrency(stats.income)}
-Total Despesas (Mês): ${formatCurrency(stats.expenses)}
-Principais Categorias de Gasto: ${topCats || 'Sem dados'}
-Número de transações: ${currentTransactions.length}`;
-                        
+Idealizador: Luiz Gustavo Andrade Santos
+Data do Relatório: ${new Date().toLocaleDateString('pt-BR')}
+
+RESUMO DO PERÍODO:
+- Saldo Atual: ${formatCurrency(stats.total)}
+- Total Receitas: ${formatCurrency(stats.income)}
+- Total Despesas: ${formatCurrency(stats.expenses)}
+- Fluxo Líquido: ${formatCurrency(stats.total)}
+
+TOP CATEGORIAS DE GASTO:
+${topCats || 'Sem dados suficientes'}
+
+MÉTRICAS:
+- Total Transactions: ${transactions.length}
+- Média por Transação: ${formatCurrency(stats.expenses / (transactions.filter(t => t.type === 'saída').length || 1))}
+
+SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomendações de investimentos baseados nestes dados.`;
                         navigator.clipboard.writeText(reportPrompt);
-                        toast.success('Relatório gerado e copiado!');
+                        toast.success('Relatório para IA copiado!');
                       }}
                       className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-3"
                     >
-                      <TrendingUp className="w-5 h-5 text-emerald-400" /> Gerar Relatório para IA
+                      <Share2 className="w-5 h-5 text-emerald-400" /> Exportar Dados para Saúde Financeira
                     </button>
                   </div>
                 </Card>
@@ -1317,6 +1736,17 @@ Número de transações: ${currentTransactions.length}`;
                       </div>
                     ))}
                   </div>
+
+                   <div className="pt-10 border-t border-white/5 h-[650px]">
+                    <CategoryDonutSection 
+                      title="Análise por Distribuição"
+                      data={categoryData}
+                      colorMode={donutColorMode}
+                      setColorMode={setDonutColorMode}
+                      viewMode={donutViewMode}
+                      setViewMode={setDonutViewMode}
+                    />
+                  </div>
                 </Card>
               </motion.div>
             )}
@@ -1343,55 +1773,39 @@ Número de transações: ${currentTransactions.length}`;
                     <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Gerencial de Dados</h3>
                   </div>
                   <div className="space-y-4">
-                    {wipeStep === 0 ? (
-                      <button 
-                        onClick={() => setWipeStep(1)} 
-                        className="w-full flex items-center justify-between p-6 bg-white/5 rounded-2xl hover:bg-rose-500/10 hover:text-rose-400 transition-all border border-white/5"
-                      >
-                        <span className="font-bold text-sm">Limpar Memória do App</span>
-                        <ChevronRight />
-                      </button>
-                    ) : wipeStep === 1 ? (
-                      <div className="p-6 bg-rose-500/10 rounded-2xl space-y-4 border border-rose-500/20">
-                         <p className="text-xs font-bold text-rose-400 uppercase tracking-widest">⚠️ Tem certeza? Isso é irreversível.</p>
-                         <div className="flex gap-2">
-                           <button onClick={() => setWipeStep(2)} className="flex-1 py-3 bg-rose-600 rounded-xl font-bold text-sm">Sim, entendo</button>
-                           <button onClick={() => setWipeStep(0)} className="flex-1 py-3 bg-white/10 rounded-xl font-bold text-sm">Cancelar</button>
-                         </div>
-                      </div>
-                    ) : (
-                      <div className="p-6 bg-rose-500/20 rounded-2xl space-y-4 border border-rose-500/40">
-                         <p className="text-xs font-bold text-rose-400 uppercase tracking-widest">Digite 'DELETAR' para confirmar:</p>
-                         <input 
-                            type="text" 
-                            className="w-full px-4 py-3 bg-black/40 border border-rose-500/30 rounded-xl outline-none text-white font-mono"
-                            value={wipeConfirmText}
-                            onChange={e => setWipeConfirmText(e.target.value)}
-                         />
-                         <button 
-                            onClick={async () => {
-                              if (wipeConfirmText === 'DELETAR') {
-                                if (dirHandle) {
-                                  try {
-                                    const fileHandle = await dirHandle.getFileHandle(FILE_NAME, { create: true });
-                                    const writable = await fileHandle.createWritable();
-                                    await writable.write("");
-                                    await writable.close();
-                                  } catch (e) { console.error(e); }
-                                }
-                                await clearState(dbInstance);
-                                localStorage.clear();
-                                window.location.reload();
-                              }
-                            }}
-                            disabled={wipeConfirmText !== 'DELETAR'}
-                            className="w-full py-4 bg-rose-600 disabled:opacity-50 rounded-xl font-bold uppercase text-xs"
-                         >
-                            CONFIRMAR DELEÇÃO TOTAL
-                         </button>
-                         <button onClick={() => setWipeStep(0)} className="w-full text-[10px] font-black text-slate-500 hover:text-white uppercase">Cancelar</button>
-                      </div>
-                    )}
+                    <button 
+                      onClick={async () => {
+                        if (confirm('ATENÇÃO: Isso apagará TODOS os dados localmente e no arquivo sincronizado (se houver). Tem certeza?')) {
+                          const emptySchema = {
+                            transactions: [],
+                            categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }))
+                          };
+                          
+                          if (dirHandle) {
+                            try {
+                              const fileHandle = await dirHandle.getFileHandle(FILE_NAME, { create: true });
+                              const writable = await fileHandle.createWritable();
+                              await writable.write(JSON.stringify(emptySchema, null, 2));
+                              await writable.close();
+                            } catch (e) {
+                              console.error('Falha ao limpar arquivo:', e);
+                            }
+                          }
+                          
+                          if (dbInstance) {
+                            await clearState(dbInstance);
+                          }
+                          
+                          localStorage.clear();
+                          sessionStorage.clear();
+                          window.location.reload();
+                        }
+                      }}
+                      className="w-full flex items-center justify-between p-6 bg-rose-500/10 text-rose-400 rounded-2xl hover:bg-rose-500/20 transition-all border border-rose-500/30"
+                    >
+                      <span className="font-bold text-sm">Limpar Todos os Dados</span>
+                      <Trash2 className="w-5 h-5" />
+                    </button>
                     
                     <button 
                       onClick={() => setBootStage('selector')} 
@@ -1441,12 +1855,21 @@ Número de transações: ${currentTransactions.length}`;
                       <div className="absolute top-0 right-0 p-8 opacity-[0.03] rotate-12"><Ghost className="w-64 h-64" /></div>
                       <div className="space-y-6 relative">
                         <p className="text-2xl text-slate-300 font-medium leading-relaxed">
-                          Este aplicativo é um projeto experimental que combina as melhores práticas de **UI/UX** com o poder de processamento da **Inteligência Artificial**.
+                          O **VerdeGrana** é uma ferramenta de gestão financeira idealizada para transformar a relação das pessoas com o dinheiro através da tecnologia.
                         </p>
-                        <div className="h-px w-20 bg-emerald-500 mx-auto opacity-30" />
-                        <p className="text-lg text-slate-400 italic">
-                          "Gerado por Luiz Gustavo Andrade Santos, app feito 100% com IA. Todos os direitos reservados ao Google AI Studio."
-                        </p>
+                        <div className="space-y-4">
+                           <div className="space-y-2">
+                             <p className="text-xl font-bold text-white uppercase tracking-tighter">Luiz Gustavo Andrade Santos</p>
+                             <p className="text-slate-400 text-sm">Estudante de Contabilidade (UFCA) & Servidor Público (IBGE)</p>
+                             <p className="text-emerald-500 text-xs font-bold font-mono tracking-widest">roogxbox@gmail.com</p>
+                           </div>
+                           <p className="text-[10px] text-slate-600 font-medium leading-relaxed uppercase tracking-widest text-justify">
+                            Este aplicativo foi inteiramente idealizado, projetado e gerado através de processos de Inteligência Artificial sob a curadoria e direção técnica de Luiz Gustavo Andrade Santos. 
+                            O VerdeGrana representa o ápice da comoditização da engenharia de software através de LLMs, sendo focado em eficiência financeira e privacidade total de dados.
+                            Luiz Gustavo é estudante de Ciências Contábeis na Universidade Federal do Cariri (UFCA) e atua como Servidor Público no IBGE, unindo o rigor analítico contábil com a inovação tecnológica. <br/><br/>
+                            Gerado com auxílio do Google Ai Studio.
+                          </p>
+                        </div>
                       </div>
                       
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-10">
@@ -1477,6 +1900,10 @@ Número de transações: ${currentTransactions.length}`;
           </AnimatePresence>
         </section>
       </main>
+
+      <footer className="w-full py-10 px-6 text-center text-[9px] text-slate-600 font-black uppercase tracking-[0.4em] border-t border-white/5 mt-auto opacity-40">
+        Gerado por Luiz Gustavo Andrade Santos, app feito 100% com IA. Todos os direitos reservados ao Google Ai Studio.
+      </footer>
 
       {/* MOBILE BOTTOM NAVBAR */}
       {mode === 'mobile' && bootStage === 'ready' && (

@@ -26,3 +26,7 @@ export async function saveState(db: IDBPDatabase, data: AppData) {
 export async function getState(db: IDBPDatabase): Promise<Partial<AppData> | null> {
   return db.get(STORE_NAME, 'current_state');
 }
+
+export async function clearState(db: IDBPDatabase) {
+  await db.clear(STORE_NAME);
+}

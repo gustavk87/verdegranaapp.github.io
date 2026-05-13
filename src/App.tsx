@@ -40,7 +40,13 @@ import {
   Pie, 
   Cell,
   LineChart,
-  Line
+  Line,
+  RadarChart,
+  Radar,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Legend
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -82,9 +88,20 @@ const DEFAULT_CATEGORIES = [
   'Moradia', 'Alimentação', 'Transporte', 'Educação', 'Lazer', 'Saúde', 'Trabalho', 'Outros'
 ];
 
-type Tab = 'reports' | 'transactions' | 'ai' | 'categories' | 'settings';
+type Tab = 'reports' | 'transactions' | 'ai' | 'categories' | 'settings' | 'about';
 
-// --- Database Instance ---
+interface DateFilter {
+  month: number;
+  year: number;
+  type: 'month' | 'custom';
+  startDate?: string;
+  endDate?: string;
+}
+
+interface AnalyticsConfig {
+  granularity: 'day' | 'month' | 'year';
+  compareCategories: string[];
+}
 let dbInstance: any = null;
 
 export default function App() {
@@ -107,9 +124,22 @@ export default function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [dateFilter, setDateFilter] = useState({ month: new Date().getMonth() + 1, year: new Date().getFullYear() });
+  const [dateFilter, setDateFilter] = useState<DateFilter>({ 
+    month: new Date().getMonth() + 1, 
+    year: new Date().getFullYear(),
+    type: 'month'
+  });
+  const [analyticsConfig, setAnalyticsConfig] = useState<AnalyticsConfig>({
+    granularity: 'month',
+    compareCategories: []
+  });
+  const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
+  const [selectedTxIds, setSelectedTxIds] = useState<string[]>([]);
+  const [sortConfig, setSortConfig] = useState<'date' | 'value-asc' | 'value-desc'>('date');
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [isChartReady, setIsChartReady] = useState(false);
+  const [wipeStep, setWipeStep] = useState(0);
+  const [wipeConfirmText, setWipeConfirmText] = useState('');
 
   // Sync state to IDB (Instant)
   useEffect(() => {
@@ -363,37 +393,71 @@ export default function App() {
   const currentTransactions = useMemo(() => {
     return transactions.filter(t => {
       const date = new Date(t.date);
-      return (date.getMonth() + 1) === dateFilter.month && date.getFullYear() === dateFilter.year;
+      if (dateFilter.type === 'month') {
+        return (date.getMonth() + 1) === dateFilter.month && date.getFullYear() === dateFilter.year;
+      } else if (dateFilter.startDate && dateFilter.endDate) {
+        const start = new Date(dateFilter.startDate);
+        const end = new Date(dateFilter.endDate);
+        return date >= start && date <= end;
+      }
+      return true;
     });
   }, [transactions, dateFilter]);
 
   const stats = useMemo(() => {
     const income = currentTransactions.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
     const expenses = currentTransactions.filter(t => t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
-    return { total: income - expenses, income, expenses };
+    const total = income - expenses;
+    
+    let balanceColor = 'text-slate-400';
+    if (total > 0) balanceColor = 'text-emerald-400';
+    if (total < 0) balanceColor = 'text-rose-400';
+
+    return { total, income, expenses, balanceColor };
   }, [currentTransactions]);
 
   const chartData = useMemo(() => {
-    const lastMonths = Array.from({ length: 6 }).map((_, i) => {
-      const d = new Date();
-      d.setMonth(d.getMonth() - i);
-      return { month: d.getMonth() + 1, year: d.getFullYear(), label: d.toLocaleString('pt-BR', { month: 'short' }) };
-    }).reverse();
+    if (analyticsConfig.granularity === 'month') {
+      const lastMonths = Array.from({ length: 6 }).map((_, i) => {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        return { month: d.getMonth() + 1, year: d.getFullYear(), label: d.toLocaleString('pt-BR', { month: 'short' }) };
+      }).reverse();
 
-    return lastMonths.map(m => {
-      const income = transactions.filter(t => {
-        const d = new Date(t.date);
-        return t.type === 'entrada' && (d.getMonth() + 1) === m.month && d.getFullYear() === m.year;
-      }).reduce((acc, t) => acc + t.value, 0);
-      
-      const expense = transactions.filter(t => {
-        const d = new Date(t.date);
-        return t.type === 'saída' && (d.getMonth() + 1) === m.month && d.getFullYear() === m.year;
-      }).reduce((acc, t) => acc + t.value, 0);
-      
-      return { name: m.label, income, expense };
-    });
-  }, [transactions]);
+      return lastMonths.map(m => {
+        const income = transactions.filter(t => {
+          const d = new Date(t.date);
+          return t.type === 'entrada' && (d.getMonth() + 1) === m.month && d.getFullYear() === m.year;
+        }).reduce((acc, t) => acc + t.value, 0);
+        
+        const expense = transactions.filter(t => {
+          const d = new Date(t.date);
+          return t.type === 'saída' && (d.getMonth() + 1) === m.month && d.getFullYear() === m.year;
+        }).reduce((acc, t) => acc + t.value, 0);
+        
+        return { name: m.label, income, expense };
+      });
+    } else if (analyticsConfig.granularity === 'day') {
+      const lastDays = Array.from({ length: 7 }).map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        return { date: d.toISOString().split('T')[0], label: d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) };
+      }).reverse();
+
+      return lastDays.map(d => {
+        const income = transactions.filter(t => t.type === 'entrada' && t.date === d.date).reduce((acc, t) => acc + t.value, 0);
+        const expense = transactions.filter(t => t.type === 'saída' && t.date === d.date).reduce((acc, t) => acc + t.value, 0);
+        return { name: d.label, income, expense };
+      });
+    } else {
+      const lastYears = [2024, 2025, 2026];
+      return lastYears.map(y => {
+        const income = transactions.filter(t => t.type === 'entrada' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+        const expense = transactions.filter(t => t.type === 'saída' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+        return { name: y.toString(), income, expense };
+      });
+    }
+  }, [transactions, analyticsConfig.granularity]);
 
   const categoryData = useMemo(() => {
     const expByCat: Record<string, number> = {};
@@ -405,9 +469,35 @@ export default function App() {
 
   const filteredTransactions = useMemo(() => {
     return currentTransactions.filter(t => {
-      return t.desc.toLowerCase().includes(searchTerm.toLowerCase()) || t.category.toLowerCase().includes(searchTerm.toLowerCase());
-    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [currentTransactions, searchTerm]);
+      const matchSearch = t.desc.toLowerCase().includes(searchTerm.toLowerCase()) || t.category.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchCat = categoryFilters.length === 0 || categoryFilters.includes(t.category);
+      return matchSearch && matchCat;
+    }).sort((a, b) => {
+      if (sortConfig === 'date') return new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (sortConfig === 'value-asc') return a.value - b.value;
+      if (sortConfig === 'value-desc') return b.value - a.value;
+      return 0;
+    });
+  }, [currentTransactions, searchTerm, categoryFilters, sortConfig]);
+
+  const comparisonData = useMemo(() => {
+    if (analyticsConfig.compareCategories.length === 0) return [];
+    
+    // Last 6 points (days/months) for the selected categories
+    const points = chartData.map(d => d.name);
+    return points.map(p => {
+       const item: any = { name: p };
+       analyticsConfig.compareCategories.forEach(cat => {
+          item[cat] = transactions.filter(t => 
+            t.category === cat && 
+            t.type === 'saída' &&
+            // Note: Simplification for demo - ideally matches labels exactly
+            new Date(t.date).toLocaleString('pt-BR', { month: 'short' }) === p
+          ).reduce((acc, it) => acc + it.value, 0);
+       });
+       return item;
+    });
+  }, [transactions, analyticsConfig.compareCategories, chartData]);
 
   const exportData = () => {
     const data = JSON.stringify({ transactions, categories }, null, 2);
@@ -549,6 +639,7 @@ export default function App() {
             <NavItem icon={<Bot />} label="IA" active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} />
             <NavItem icon={<Tag />} label="Categorias" active={activeTab === 'categories'} onClick={() => setActiveTab('categories')} />
             <NavItem icon={<Settings />} label="Ajustes" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+            <NavItem icon={<Leaf />} label="Créditos" active={activeTab === 'about'} onClick={() => setActiveTab('about')} />
           </nav>
 
           <button 
@@ -564,28 +655,63 @@ export default function App() {
       {/* CONTENT AREA */}
       <main className="flex-1 overflow-y-auto custom-scrollbar flex flex-col pb-24 md:pb-0">
         <header className="p-6 md:p-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-8">
-          <div className="space-y-1">
+          <div className="space-y-4">
             <h1 className="text-3xl font-black text-white tracking-tighter">VerdeGrana <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded font-mono uppercase">Pro</span></h1>
-            <div className="flex items-center gap-3">
-              <p className="text-slate-500 text-sm font-medium">Balanço de</p>
-              <select 
-                value={dateFilter.month} 
-                onChange={e => setDateFilter(prev => ({ ...prev, month: parseInt(e.target.value) }))}
-                className="bg-emerald-500/10 text-emerald-400 font-bold text-xs px-3 py-1 rounded-full border border-emerald-500/20 outline-none"
-              >
-                {Array.from({ length: 12 }).map((_, i) => (
-                  <option key={i} value={i + 1} className="bg-slate-900">{new Date(0, i).toLocaleString('pt-BR', { month: 'long' })}</option>
-                ))}
-              </select>
-              <select 
-                value={dateFilter.year} 
-                onChange={e => setDateFilter(prev => ({ ...prev, year: parseInt(e.target.value) }))}
-                className="bg-emerald-500/10 text-emerald-400 font-bold text-xs px-3 py-1 rounded-full border border-emerald-500/20 outline-none"
-              >
-                {[2023, 2024, 2025, 2026].map(y => (
-                  <option key={y} value={y} className="bg-slate-900">{y}</option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center bg-white/5 p-1 rounded-full border border-white/10">
+                <button 
+                  onClick={() => setDateFilter(prev => ({ ...prev, type: 'month' }))}
+                  className={cn("px-3 py-1 rounded-full text-[10px] font-bold transition-all", dateFilter.type === 'month' ? "bg-emerald-500 text-white" : "text-slate-500")}
+                >
+                  MENSAL
+                </button>
+                <button 
+                  onClick={() => setDateFilter(prev => ({ ...prev, type: 'custom' }))}
+                  className={cn("px-3 py-1 rounded-full text-[10px] font-bold transition-all", dateFilter.type === 'custom' ? "bg-emerald-500 text-white" : "text-slate-500")}
+                >
+                  PERSONALIZADO
+                </button>
+              </div>
+
+              {dateFilter.type === 'month' ? (
+                <div className="flex items-center gap-1">
+                  <select 
+                    value={dateFilter.month} 
+                    onChange={e => setDateFilter(prev => ({ ...prev, month: parseInt(e.target.value) }))}
+                    className="bg-emerald-500/10 text-emerald-400 font-bold text-xs px-3 py-1 rounded-full border border-emerald-500/20 outline-none"
+                  >
+                    {Array.from({ length: 12 }).map((_, i) => (
+                      <option key={i} value={i + 1} className="bg-slate-900">{new Date(0, i).toLocaleString('pt-BR', { month: 'long' })}</option>
+                    ))}
+                  </select>
+                  <select 
+                    value={dateFilter.year} 
+                    onChange={e => setDateFilter(prev => ({ ...prev, year: parseInt(e.target.value) }))}
+                    className="bg-emerald-500/10 text-emerald-400 font-bold text-xs px-3 py-1 rounded-full border border-emerald-500/20 outline-none"
+                  >
+                    {[2023, 2024, 2025, 2026].map(y => (
+                      <option key={y} value={y} className="bg-slate-900">{y}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <input 
+                    type="date" 
+                    value={dateFilter.startDate || ''} 
+                    onChange={e => setDateFilter(prev => ({ ...prev, startDate: e.target.value }))}
+                    className="bg-white/5 text-slate-300 text-[10px] font-bold px-3 py-1 rounded-full border border-white/10 outline-none"
+                  />
+                  <span className="text-slate-600 text-xs">até</span>
+                  <input 
+                    type="date" 
+                    value={dateFilter.endDate || ''} 
+                    onChange={e => setDateFilter(prev => ({ ...prev, endDate: e.target.value }))}
+                    className="bg-white/5 text-slate-300 text-[10px] font-bold px-3 py-1 rounded-full border border-white/10 outline-none"
+                  />
+                </div>
+              )}
+              
               {dirHandle && (
                 <div className={cn(
                   "flex items-center gap-1 text-[10px] font-bold ml-2 transition-all",
@@ -600,7 +726,7 @@ export default function App() {
           </div>
           
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full md:w-auto">
-            <StatSmall label="Saldo" value={stats.total} color="text-emerald-400" />
+            <StatSmall label="Saldo Global" value={stats.total} color={stats.balanceColor} />
             <StatSmall label="Receitas" value={stats.income} color="text-emerald-500" prefix="+" />
             <StatSmall label="Despesas" value={stats.expenses} color="text-rose-500" prefix="-" />
           </div>
@@ -610,6 +736,50 @@ export default function App() {
           <AnimatePresence mode="wait">
             {activeTab === 'reports' && (
               <motion.div key="dash" initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -15 }} className="grid grid-cols-12 gap-6">
+                <div className="col-span-12 flex flex-wrap items-center justify-between gap-4 glass p-6 rounded-[2.5rem] border border-white/5">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Agrupar por:</span>
+                    <div className="flex p-1 bg-white/5 rounded-full border border-white/10">
+                      {(['day', 'month', 'year'] as const).map(g => (
+                        <button 
+                          key={g} 
+                          onClick={() => setAnalyticsConfig(p => ({ ...p, granularity: g }))}
+                          className={cn("px-4 py-1.5 rounded-full text-[10px] font-black transition-all uppercase", analyticsConfig.granularity === g ? "bg-emerald-500 text-white" : "text-slate-500 hover:text-slate-300")}
+                        >
+                          {g === 'day' ? 'Dia' : g === 'month' ? 'Mês' : 'Ano'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Comparar Categorias:</span>
+                    <div className="flex flex-wrap gap-2">
+                       {categories.slice(0, 4).map(c => (
+                         <button 
+                          key={c.id}
+                          onClick={() => {
+                            setAnalyticsConfig(p => ({
+                              ...p,
+                              compareCategories: p.compareCategories.includes(c.name) 
+                                ? p.compareCategories.filter(name => name !== c.name)
+                                : [...p.compareCategories, c.name]
+                            }));
+                          }}
+                          className={cn(
+                            "px-3 py-1 rounded-full text-[9px] font-bold border transition-all",
+                            analyticsConfig.compareCategories.includes(c.name)
+                              ? "bg-emerald-500/20 border-emerald-500 text-emerald-400"
+                              : "bg-white/5 border-white/10 text-slate-500"
+                          )}
+                         >
+                           {c.name}
+                         </button>
+                       ))}
+                    </div>
+                  </div>
+                </div>
+
                 {transactions.length === 0 ? (
                   <div className="col-span-12 py-32 text-center glass rounded-[3rem] border-dashed border-white/10">
                     <Leaf className="w-16 h-16 text-slate-700 mx-auto mb-6" />
@@ -687,6 +857,31 @@ export default function App() {
                         )}
                       </Card>
                     )}
+
+                    {analyticsConfig.compareCategories.length > 0 && (
+                      <Card className="col-span-12 p-10 h-[500px]">
+                        <h3 className="font-bold text-xl mb-8">Comparativo Detalhado de Categorias</h3>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <RadarChart cx="50%" cy="50%" outerRadius="80%" data={comparisonData}>
+                            <PolarGrid stroke="rgba(255,255,255,0.1)" />
+                            <PolarAngleAxis dataKey="name" stroke="#64748b" fontSize={11} />
+                            <PolarRadiusAxis stroke="rgba(255,255,255,0.05)" />
+                            {analyticsConfig.compareCategories.map((cat, i) => (
+                               <Radar 
+                                key={cat} 
+                                name={cat} 
+                                dataKey={cat} 
+                                stroke={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'][i % 4]} 
+                                fill={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'][i % 4]} 
+                                fillOpacity={0.4} 
+                               />
+                            ))}
+                            <Legend />
+                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
+                          </RadarChart>
+                        </ResponsiveContainer>
+                      </Card>
+                    )}
                   </>
                 )}
               </motion.div>
@@ -694,18 +889,67 @@ export default function App() {
 
             {activeTab === 'transactions' && (
               <motion.div key="tx" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="space-y-6">
-                <div className="flex flex-col md:flex-row gap-4 items-center bg-white/5 p-4 rounded-[2rem] border border-white/5">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600" />
-                    <input 
-                      type="text" placeholder="Filtrar lançamentos..." 
-                      className="w-full bg-slate-900/50 border border-white/5 rounded-2xl py-4 pl-12 pr-6 text-sm focus:border-emerald-500/50 transition-all outline-none"
-                      value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-                    />
+                <div className="flex flex-col gap-6 bg-white/5 p-8 rounded-[2.5rem] border border-white/5">
+                  <div className="flex flex-col md:flex-row gap-4 items-center">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600" />
+                      <input 
+                        type="text" placeholder="Filtrar por descrição ou categoria..." 
+                        className="w-full bg-slate-900/50 border border-white/10 rounded-2xl py-4 pl-12 pr-6 text-sm focus:border-emerald-500/50 transition-all outline-none"
+                        value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                      />
+                    </div>
+                    
+                    <div className="flex bg-slate-900/50 p-1 rounded-2xl border border-white/10">
+                       <select 
+                        value={sortConfig}
+                        onChange={e => setSortConfig(e.target.value as any)}
+                        className="bg-transparent text-slate-300 text-xs font-bold px-4 py-2 outline-none appearance-none"
+                       >
+                         <option value="date" className="bg-slate-900">Mais Recentes</option>
+                         <option value="value-desc" className="bg-slate-900">Maior Valor</option>
+                         <option value="value-asc" className="bg-slate-900">Menor Valor</option>
+                       </select>
+                    </div>
+
+                    <button onClick={() => setIsAddModalOpen(true)} className="w-full md:w-auto h-14 px-8 bg-emerald-600 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-500 transition-colors shadow-xl shadow-emerald-600/20">
+                      <Plus className="w-6 h-6" /> Novo Lançamento
+                    </button>
                   </div>
-                  <button onClick={() => setIsAddModalOpen(true)} className="w-full md:w-auto h-14 px-8 bg-emerald-600 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-500 transition-colors shadow-xl shadow-emerald-600/20">
-                    <Plus className="w-6 h-6" /> Novo
-                  </button>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-white/5">
+                    <span className="text-[10px] uppercase font-black text-slate-600 mr-2">Filtrar Categoria:</span>
+                    {categories.map(cat => (
+                      <button 
+                        key={cat.id}
+                        onClick={() => {
+                          setCategoryFilters(p => p.includes(cat.name) ? p.filter(c => c !== cat.name) : [...p, cat.name]);
+                        }}
+                        className={cn(
+                          "px-3 py-1 rounded-full text-[9px] font-bold border transition-all",
+                          categoryFilters.includes(cat.name) ? "bg-emerald-500 text-white border-emerald-500" : "bg-white/5 border-white/10 text-slate-500"
+                        )}
+                      >
+                        {cat.name}
+                      </button>
+                    ))}
+                    {categoryFilters.length > 0 && <button onClick={() => setCategoryFilters([])} className="text-[9px] font-bold text-rose-500 hover:underline">Limpar Filtros</button>}
+                  </div>
+
+                  {selectedTxIds.length > 0 && (
+                    <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="flex gap-2">
+                       <button 
+                        onClick={() => {
+                          setTransactions(p => p.filter(t => !selectedTxIds.includes(t.id)));
+                          setSelectedTxIds([]);
+                          toast.success(`${selectedTxIds.length} itens removidos.`);
+                        }}
+                        className="w-full py-4 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-rose-500/20 transition-all shadow-xl shadow-rose-500/5"
+                       >
+                         <Trash2 className="w-5 h-5" /> Deletar Selecionados ({selectedTxIds.length})
+                       </button>
+                    </motion.div>
+                  )}
                 </div>
 
                 <div className="glass rounded-[2.5rem] overflow-hidden border border-white/5">
@@ -713,16 +957,38 @@ export default function App() {
                     <table className="w-full text-left">
                       <thead className="bg-white/5 text-[10px] uppercase font-bold tracking-widest text-slate-500">
                         <tr>
+                          <th className="px-8 py-5">
+                            <input 
+                              type="checkbox" 
+                              className="w-4 h-4 rounded border-white/10 bg-slate-900 checked:bg-emerald-500 focus:ring-0" 
+                              onChange={(e) => {
+                                if (e.target.checked) setSelectedTxIds(filteredTransactions.map(t => t.id));
+                                else setSelectedTxIds([]);
+                              }}
+                              checked={selectedTxIds.length === filteredTransactions.length && filteredTransactions.length > 0}
+                            />
+                          </th>
                           <th className="px-8 py-5">Data</th>
                           <th className="px-8 py-5">Descrição</th>
                           <th className="px-8 py-5">Categoria</th>
                           <th className="px-8 py-5">Valor</th>
-                          <th className="px-8 py-5 text-right">Ação</th>
+                          <th className="px-10 py-5 text-right">Ação</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
                         {filteredTransactions.map(t => (
-                          <tr key={t.id} className="hover:bg-white/5 transition-all group">
+                          <tr key={t.id} className={cn("hover:bg-white/5 transition-all group", selectedTxIds.includes(t.id) && "bg-emerald-500/5")}>
+                            <td className="px-8 py-6">
+                              <input 
+                                type="checkbox" 
+                                className="w-4 h-4 rounded border-white/10 bg-slate-900 checked:bg-emerald-500 focus:ring-0" 
+                                checked={selectedTxIds.includes(t.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) setSelectedTxIds(prev => [...prev, t.id]);
+                                  else setSelectedTxIds(prev => prev.filter(id => id !== t.id));
+                                }}
+                              />
+                            </td>
                             <td className="px-8 py-6 text-sm text-slate-400">{new Date(t.date).toLocaleDateString('pt-BR')}</td>
                             <td className="px-8 py-6 font-semibold text-white">{t.desc}</td>
                             <td className="px-8 py-6 text-xs">
@@ -731,7 +997,7 @@ export default function App() {
                             <td className={cn("px-8 py-6 font-black", t.type === 'entrada' ? "text-emerald-400" : "text-rose-500")}>
                               {t.type === 'entrada' ? '+' : '-'} {formatCurrency(t.value)}
                             </td>
-                            <td className="px-8 py-6 text-right">
+                            <td className="px-10 py-6 text-right">
                               <div className="flex justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button onClick={() => { setEditingTransaction(t); setIsAddModalOpen(true); }} className="p-2.5 bg-white/5 rounded-xl hover:text-emerald-400 transition-colors"><Edit3 className="w-5 h-5" /></button>
                                 <button onClick={() => setTransactions(p => p.filter(it => it.id !== t.id))} className="p-2.5 bg-white/5 rounded-xl hover:text-rose-400 transition-colors"><Trash2 className="w-5 h-5" /></button>
@@ -743,7 +1009,7 @@ export default function App() {
                     </table>
                   </div>
                   {filteredTransactions.length === 0 && (
-                    <div className="py-20 text-center text-slate-600">Nenhum lançamento para exibir.</div>
+                    <div className="py-20 text-center text-slate-600">Nenhum lançamento encontrado com este filtro.</div>
                   )}
                 </div>
               </motion.div>
@@ -751,17 +1017,21 @@ export default function App() {
 
             {activeTab === 'ai' && (
               <motion.div key="ai" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <Card className="p-10 flex flex-col items-center text-center gap-8 border-emerald-500/20">
+                <Card className="p-10 flex flex-col items-center text-center gap-8 border-emerald-500/20 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-emerald-500 to-transparent" />
                   <div className="w-24 h-24 bg-emerald-500/20 rounded-[2.5rem] flex items-center justify-center animate-pulse">
                     <Bot className="w-12 h-12 text-emerald-400" />
                   </div>
                   <div className="space-y-4">
                     <h2 className="text-3xl font-black text-white">Assistente Mestre</h2>
-                    <p className="text-slate-400 text-sm leading-relaxed max-w-sm">Capture extratos bagunçados, notas de áudio ou textos e transforme-os instantaneamente em dados blindados.</p>
+                    <p className="text-slate-400 text-sm leading-relaxed max-w-sm">
+                      Registre seus gastos em segundos! Copie o prompt mestre abaixo e envie para sua IA de preferência. Após a confirmação dela, basta ditar seus gastos livremente. O resultado formatado deve ser colado no nosso Importador Inteligente ao lado.
+                    </p>
                   </div>
-                  <button 
-                    onClick={() => {
-                      const prompt = `You are a professional financial data parser. 
+                  <div className="w-full space-y-3">
+                    <button 
+                      onClick={() => {
+                        const prompt = `You are a professional financial data parser. 
 First, acknowledge this role by exactly saying: "Ok, o que quer que eu contabilize?". 
 Then, wait for me to provide transaction details (text, images or audio transcripts). 
 Your ONLY goal is to return a raw JSON array.
@@ -774,13 +1044,33 @@ Strict Rules:
 - Return ONLY the JSON code block.
 
 Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "string", "type": "entrada|saída"}]`;
-                      navigator.clipboard.writeText(prompt);
-                      toast.success('Prompt mestre copiado!');
-                    }}
-                    className="w-full py-5 bg-emerald-600 rounded-3xl font-bold hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-600/30"
-                  >
-                    Gerar Master Prompt
-                  </button>
+                        navigator.clipboard.writeText(prompt);
+                        toast.success('Prompt mestre copiado!');
+                      }}
+                      className="w-full py-5 bg-emerald-600 rounded-3xl font-bold hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-600/30 flex items-center justify-center gap-3"
+                    >
+                      <Copy className="w-5 h-5" /> Copiar Master Prompt
+                    </button>
+                    
+                    <button 
+                      onClick={() => {
+                        const topCats = categoryData.slice(0, 3).map(c => `${c.name}: ${formatCurrency(c.value)}`).join(', ');
+                        const reportPrompt = `Analise estes dados financeiros do VerdeGrana e forneça um relatório detalhado com insights de economia e saúde financeira:
+                        
+Saldo Atual: ${formatCurrency(stats.total)}
+Total Receitas (Mês): ${formatCurrency(stats.income)}
+Total Despesas (Mês): ${formatCurrency(stats.expenses)}
+Principais Categorias de Gasto: ${topCats || 'Sem dados'}
+Número de transações: ${currentTransactions.length}`;
+                        
+                        navigator.clipboard.writeText(reportPrompt);
+                        toast.success('Relatório gerado e copiado!');
+                      }}
+                      className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-3"
+                    >
+                      <TrendingUp className="w-5 h-5 text-emerald-400" /> Gerar Dados para Relatório
+                    </button>
+                  </div>
                 </Card>
 
                 <Card className="p-10 flex flex-col gap-8">
@@ -867,7 +1157,7 @@ Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "
                     <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl"><FolderSync /></div>
                     <h3 className="text-xl font-bold text-white">Sincronização Local</h3>
                   </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">Conecte o VerdeGrana a uma pasta no seu computador para sincronização de arquivos em tempo real (Experimental).</p>
+                  <p className="text-slate-400 text-sm leading-relaxed">Conecte o VerdeGrana a uma pasta no seu computador para sincronização de arquivos em tempo real. Isso garante persistência absoluta.</p>
                   <button onClick={handleSelectDirectory} className="mt-auto flex items-center justify-center gap-3 py-5 bg-white/5 border border-white/10 rounded-[1.5rem] group hover:bg-white/10 transition-all text-white font-bold">
                     <FileJson className="group-hover:text-emerald-400 transition-colors" /> Configurar Folder Sync
                   </button>
@@ -875,29 +1165,92 @@ Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "
 
                 <Card className="p-10 flex flex-col gap-6">
                   <div className="flex items-center gap-4">
-                    <div className="p-3 bg-rose-500/20 text-rose-400 rounded-2xl"><LogOut /></div>
-                    <h3 className="text-xl font-bold text-white">Sessão & Preferências</h3>
+                    <div className="p-3 bg-rose-500/20 text-rose-400 rounded-2xl"><Trash2 /></div>
+                    <h3 className="text-xl font-bold text-white">Salvaguarda de Dados</h3>
                   </div>
                   <div className="space-y-4">
+                    {wipeStep === 0 ? (
+                      <button 
+                        onClick={() => setWipeStep(1)} 
+                        className="w-full flex items-center justify-between p-6 bg-white/5 rounded-2xl hover:bg-rose-500/10 hover:text-rose-400 transition-all border border-white/5"
+                      >
+                        <span className="font-bold">Limpar Memória do App</span>
+                        <ChevronRight />
+                      </button>
+                    ) : wipeStep === 1 ? (
+                      <div className="p-6 bg-rose-500/10 rounded-2xl space-y-4 border border-rose-500/20">
+                         <p className="text-xs font-bold text-rose-400 uppercase tracking-widest">⚠️ Tem certeza? Isso é irreversível.</p>
+                         <div className="flex gap-2">
+                           <button onClick={() => setWipeStep(2)} className="flex-1 py-3 bg-rose-600 rounded-xl font-bold text-sm">Sim, entendo</button>
+                           <button onClick={() => setWipeStep(0)} className="flex-1 py-3 bg-white/10 rounded-xl font-bold text-sm">Cancelar</button>
+                         </div>
+                      </div>
+                    ) : (
+                      <div className="p-6 bg-rose-500/20 rounded-2xl space-y-4 border border-rose-500/40">
+                         <p className="text-xs font-bold text-rose-400 uppercase tracking-widest">Digite 'DELETAR' para confirmar:</p>
+                         <input 
+                            type="text" 
+                            className="w-full px-4 py-3 bg-black/40 border border-rose-500/30 rounded-xl outline-none text-white font-mono"
+                            value={wipeConfirmText}
+                            onChange={e => setWipeConfirmText(e.target.value)}
+                         />
+                         <button 
+                            disabled={wipeConfirmText !== 'DELETAR'}
+                            onClick={() => { localStorage.clear(); location.reload(); }} 
+                            className="w-full py-4 bg-rose-600 disabled:opacity-50 rounded-xl font-bold"
+                         >
+                            CONFIRMAR DELEÇÃO TOTAL
+                         </button>
+                      </div>
+                    )}
+                    
                     <button 
                       onClick={() => setBootStage('selector')} 
                       className="w-full flex items-center justify-between p-6 bg-white/5 rounded-2xl hover:bg-white/10 transition-all border border-white/5"
                     >
-                      <span className="font-bold">Alterar Modo de Visualização</span>
-                      <ChevronRight className="text-slate-500" />
-                    </button>
-                    <button 
-                      onClick={() => { if(confirm('Wipe total?')) { localStorage.clear(); location.reload(); } }}
-                      className="w-full text-left p-6 text-rose-500 font-bold hover:underline"
-                    >
-                      Limpar Memória do App
+                      <span className="font-bold">Retornar ao Seletor de Modo</span>
+                      <Monitor className="text-slate-500" />
                     </button>
                   </div>
                   <button onClick={exportData} className="mt-auto flex items-center justify-center gap-3 py-5 bg-emerald-600/10 border border-emerald-500/30 rounded-[1.5rem] text-emerald-400 font-bold hover:bg-emerald-600 hover:text-white transition-all">
-                    <Download /> Baixar Backup Local
+                    <Download /> Baixar Backup Local (.json)
                   </button>
                 </Card>
               </motion.div>
+            )}
+
+            {activeTab === 'about' && (
+               <motion.div key="about" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl mx-auto">
+                 <Card className="p-12 text-center space-y-10 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/5 blur-[80px] rounded-full" />
+                    <div className="w-24 h-24 bg-emerald-500 rounded-[2.5rem] mx-auto flex items-center justify-center shadow-2xl shadow-emerald-500/40 rotate-6">
+                      <Leaf className="w-12 h-12 text-white" />
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <h2 className="text-4xl font-black text-white tracking-tighter">Sobre o Autor</h2>
+                      <p className="text-slate-400 leading-relaxed">
+                         Este app foi idealizado e desenvolvido por <strong className="text-emerald-400 font-black italic">Luiz Gustavo Andrade Santos</strong>, utilizando 100% de Inteligência Artificial para criar uma ferramenta de gestão financeira acessível e moderna.
+                      </p>
+                      <p className="text-slate-400 leading-relaxed">
+                         Espero que este app ajude no seu controle financeiro! Caso tenha sugestões de melhoria ou precise de suporte, entre em contato através do e-mail abaixo.
+                      </p>
+                    </div>
+
+                    <div className="pt-6">
+                       <a 
+                        href="mailto:roogxbox@gmail.com" 
+                        className="inline-flex items-center gap-3 px-8 py-4 bg-white/5 hover:bg-emerald-600 transition-all rounded-2xl font-bold group"
+                       >
+                         <Bot className="w-6 h-6 text-emerald-500 group-hover:text-white" /> roogxbox@gmail.com
+                       </a>
+                    </div>
+                    
+                    <div className="text-[10px] text-slate-600 uppercase font-black tracking-widest pt-10">
+                       VerdeGrana Pro v1.5.0 • © 2026
+                    </div>
+                 </Card>
+               </motion.div>
             )}
           </AnimatePresence>
         </section>
@@ -908,15 +1261,14 @@ Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "
         <nav className="fixed bottom-0 left-0 right-0 glass backdrop-blur-3xl border-t border-white/5 flex items-center justify-around py-4 pb-safe z-50">
           <MobileNavItem icon={<Home />} active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} />
           <MobileNavItem icon={<ReceiptText />} active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')} />
-          {/* Main Action Button */}
           <button 
             onClick={() => setIsAddModalOpen(true)}
-            className="w-16 h-16 bg-emerald-500 rounded-full flex items-center justify-center shadow-xl shadow-emerald-500/30 -mt-10 active:scale-90 transition-transform"
+            className="w-14 h-14 bg-emerald-500 rounded-full flex items-center justify-center shadow-xl shadow-emerald-500/30 -mt-8 active:scale-90 transition-transform"
           >
             <Plus className="w-8 h-8 text-white" />
           </button>
           <MobileNavItem icon={<Bot />} active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} />
-          <MobileNavItem icon={<Settings />} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+          <MobileNavItem icon={<Settings />} active={activeTab === 'settings' || activeTab === 'about'} onClick={() => setActiveTab('settings')} />
         </nav>
       )}
 

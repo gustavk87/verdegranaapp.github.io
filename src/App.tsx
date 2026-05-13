@@ -25,10 +25,17 @@ import {
   MoreHorizontal,
   Home,
   FileJson,
-  BarChart2
+  BarChart2,
+  ArrowLeft,
+  ArrowRight,
+  UserCheck,
+  Folder,
+  User,
+  Mail,
+  Ghost
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   BarChart, 
   Bar, 
@@ -42,11 +49,8 @@ import {
   Cell,
   LineChart,
   Line,
-  RadarChart,
-  Radar,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
+  AreaChart,
+  Area,
   Legend
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';

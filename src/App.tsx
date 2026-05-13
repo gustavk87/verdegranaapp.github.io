@@ -98,7 +98,7 @@ type Tab = 'reports' | 'transactions' | 'ai' | 'categories' | 'settings' | 'abou
 interface DateFilter {
   month: number;
   year: number;
-  type: 'month' | 'custom';
+  type: 'month' | 'custom' | 'all';
   startDate?: string;
   endDate?: string;
 }
@@ -132,7 +132,7 @@ export default function App() {
   const [dateFilter, setDateFilter] = useState<DateFilter>({ 
     month: new Date().getMonth() + 1, 
     year: new Date().getFullYear(),
-    type: 'month'
+    type: 'all'
   });
   const [analyticsConfig, setAnalyticsConfig] = useState<AnalyticsConfig>({
     granularity: 'month',
@@ -401,14 +401,16 @@ export default function App() {
   const currentTransactions = useMemo(() => {
     return transactions.filter(t => {
       const date = new Date(t.date);
-      if (dateFilter.type === 'month') {
+      if (dateFilter.type === 'all') {
+        return true;
+      } else if (dateFilter.type === 'month') {
         return (date.getMonth() + 1) === dateFilter.month && date.getFullYear() === dateFilter.year;
-      } else if (dateFilter.startDate && dateFilter.endDate) {
+      } else if (dateFilter.type === 'custom' && dateFilter.startDate && dateFilter.endDate) {
         const start = new Date(dateFilter.startDate);
         const end = new Date(dateFilter.endDate);
         return date >= start && date <= end;
       }
-      return true;
+      return false;
     });
   }, [transactions, dateFilter]);
 
@@ -743,6 +745,12 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex items-center bg-white/5 p-1 rounded-full border border-white/10">
                 <button 
+                  onClick={() => setDateFilter(prev => ({ ...prev, type: 'all' }))}
+                  className={cn("px-3 py-1 rounded-full text-[10px] font-bold transition-all", dateFilter.type === 'all' ? "bg-emerald-500 text-white" : "text-slate-500")}
+                >
+                  VISÃO GERAL
+                </button>
+                <button 
                   onClick={() => setDateFilter(prev => ({ ...prev, type: 'month' }))}
                   className={cn("px-3 py-1 rounded-full text-[10px] font-bold transition-all", dateFilter.type === 'month' ? "bg-emerald-500 text-white" : "text-slate-500")}
                 >
@@ -777,7 +785,7 @@ export default function App() {
                     ))}
                   </select>
                 </div>
-              ) : (
+              ) : dateFilter.type === 'custom' ? (
                 <div className="flex items-center gap-1">
                   <input 
                     type="date" 
@@ -793,7 +801,7 @@ export default function App() {
                     className="bg-white/5 text-slate-300 text-[10px] font-bold px-3 py-1 rounded-full border border-white/10 outline-none"
                   />
                 </div>
-              )}
+              ) : null}
               
               {dirHandle && (
                 <div className={cn(

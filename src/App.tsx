@@ -90,6 +90,7 @@ let dbInstance: any = null;
 export default function App() {
   const [bootStage, setBootStage] = useState<'splash' | 'selector' | 'source' | 'ready'>('splash');
   const [mode, setMode] = useState<AppMode>('desktop');
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('reports');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>(
@@ -108,13 +109,22 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState({ month: new Date().getMonth() + 1, year: new Date().getFullYear() });
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [isChartReady, setIsChartReady] = useState(false);
+
+  // Sync state to IDB (Instant)
+  useEffect(() => {
+    if (activeTab === 'reports') {
+      setIsChartReady(false);
+      const t = setTimeout(() => setIsChartReady(true), 300);
+      return () => clearTimeout(t);
+    }
+  }, [activeTab]);
 
   // --- Persistence Logic (File System) ---
   const FILE_NAME = 'verdegrana_db.json';
 
-  const readFromFile = async (handle: FileSystemDirectoryHandle) => {
+  const readFromFile = async (handle: FileSystemDirectoryHandle, firstTime = false) => {
     try {
-      // Use queryPermission to check if we can read
       // @ts-ignore
       const permission = await handle.queryPermission({ mode: 'readwrite' });
       if (permission !== 'granted') {
@@ -122,14 +132,44 @@ export default function App() {
         return false;
       }
 
-      const fileHandle = await handle.getFileHandle(FILE_NAME, { create: true });
-      const file = await fileHandle.getFile();
-      const text = await file.text();
-      if (text) {
-        const data = JSON.parse(text);
-        if (data.transactions) setTransactions(data.transactions);
-        if (data.categories) setCategories(data.categories);
+      let fileHandle;
+      try {
+        fileHandle = await handle.getFileHandle(FILE_NAME, { create: false });
+        const file = await fileHandle.getFile();
+        const text = await file.text();
+        if (text) {
+          const data = JSON.parse(text);
+          
+          // Elastic Schema: Discover categories from transactions if they aren't in the registry
+          const existingCategories = data.categories || DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }));
+          const discoveredCategories = [...existingCategories];
+          
+          if (data.transactions) {
+            data.transactions.forEach((t: Transaction) => {
+              const exists = discoveredCategories.some(c => c.name.toLowerCase() === t.category.toLowerCase());
+              if (!exists) {
+                discoveredCategories.push({
+                  id: t.category.toLowerCase().replace(/\s+/g, '-'),
+                  name: t.category,
+                  color: `#${Math.floor(Math.random()*16777215).toString(16)}`
+                });
+              }
+            });
+            setTransactions(data.transactions);
+          }
+          
+          setCategories(discoveredCategories);
+        }
+        toast.success(firstTime ? 'Arquivo de dados carregado!' : 'Sincronização restaurada!');
+      } catch (e) {
+        // File doesn't exist, create it
+        await writeToFile(handle, { 
+          transactions: [], 
+          categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })) 
+        });
+        toast.success(`Bem-vindo ao VerdeGrana! Criamos seu arquivo de dados com sucesso.`);
       }
+      
       setIsFolderPermissionMissing(false);
       setSyncStatus('synced');
       return true;
@@ -149,12 +189,10 @@ export default function App() {
       await writable.close();
       setSyncStatus('synced');
       setIsDirty(false);
-      // Small toast for auto-sync feedback if not too noisy
-      // toast.success('Backup sincronizado!', { duration: 1000 });
     } catch (e) {
       console.error('Falha ao gravar no arquivo:', e);
       setSyncStatus('error');
-      setIsDirty(true); // Keep dirty to retry
+      setIsDirty(true);
     }
   };
 
@@ -162,7 +200,7 @@ export default function App() {
   useEffect(() => {
     const boot = async () => {
       // Stage 1: Splash (2s)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 2500));
       
       dbInstance = await initDB();
       const savedState = await getState(dbInstance);
@@ -173,22 +211,16 @@ export default function App() {
         
         if (savedState.workspaceHandle) {
           setDirHandle(savedState.workspaceHandle);
-          // Try to wake up handle
-          // @ts-ignore
-          const perm = await savedState.workspaceHandle.queryPermission({ mode: 'readwrite' });
-          if (perm === 'granted') {
-            await readFromFile(savedState.workspaceHandle);
-          } else {
-            setIsFolderPermissionMissing(true);
-          }
+          // Auto-trigger permission if we have a handle
+          setIsFolderPermissionMissing(true);
         }
 
         if (savedState.mode) {
           setMode(savedState.mode);
-          setBootStage('ready');
-        } else {
-          setBootStage('selector');
         }
+
+        // If we have a saved state but no handle, we still might need selector
+        setBootStage('selector');
       } else {
         setBootStage('selector');
       }
@@ -198,16 +230,16 @@ export default function App() {
 
   // Sync state to IDB (Instant)
   useEffect(() => {
-    if (dbInstance && bootStage === 'ready') {
+    if (dbInstance && bootStage === 'ready' && !isDemoMode) {
       const stateToSave = { transactions, categories, mode, workspaceHandle: dirHandle || undefined };
       saveState(dbInstance, stateToSave);
       setIsDirty(true);
     }
-  }, [transactions, categories, mode, dirHandle, bootStage]);
+  }, [transactions, categories, mode, dirHandle, bootStage, isDemoMode]);
 
   // Debounced File System Sync
   useEffect(() => {
-    if (!dirHandle || !isDirty || bootStage !== 'ready' || isFolderPermissionMissing) return;
+    if (!dirHandle || !isDirty || bootStage !== 'ready' || isFolderPermissionMissing || isDemoMode) return;
 
     const timeout = setTimeout(async () => {
       // @ts-ignore
@@ -217,10 +249,10 @@ export default function App() {
       } else {
         setIsFolderPermissionMissing(true);
       }
-    }, 1000); // 1s debounce to avoid thrashing
+    }, 1000);
 
     return () => clearTimeout(timeout);
-  }, [transactions, categories, dirHandle, isDirty, bootStage, isFolderPermissionMissing]);
+  }, [transactions, categories, dirHandle, isDirty, bootStage, isFolderPermissionMissing, isDemoMode]);
 
   // --- Handlers ---
   const handleRequestFolderPermission = async () => {
@@ -231,7 +263,7 @@ export default function App() {
       if (permission === 'granted') {
         setIsFolderPermissionMissing(false);
         await readFromFile(dirHandle);
-        toast.success('Sincronização restaurada!');
+        setBootStage('ready');
       }
     } catch (e) {
       toast.error('Não foi possível obter permissão da pasta.');
@@ -243,7 +275,7 @@ export default function App() {
       // @ts-ignore
       const handle = await window.showDirectoryPicker();
       setDirHandle(handle);
-      const success = await readFromFile(handle);
+      const success = await readFromFile(handle, true);
       if (success) {
         setBootStage('ready');
         toast.success('Pasta de dados sincronizada!');
@@ -251,6 +283,12 @@ export default function App() {
     } catch (e) {
       toast.error('Erro ao selecionar pasta.');
     }
+  };
+
+  const startDemoMode = () => {
+    setIsDemoMode(true);
+    setBootStage('ready');
+    toast.warning('Modo Demonstrativo: Seus dados serão perdidos ao fechar a página.');
   };
 
   const skipFolderSync = () => {
@@ -387,7 +425,7 @@ export default function App() {
   // Splash Screen
   if (bootStage === 'splash') {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950">
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 px-6">
         <motion.div 
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -405,36 +443,49 @@ export default function App() {
         >
           Verde<span className="text-emerald-500">Grana</span>
         </motion.h1>
+
+        <motion.div 
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 1.5 }}
+          className="absolute bottom-10 text-center max-w-xs"
+        >
+           <p className="text-[10px] text-slate-600 font-medium leading-relaxed uppercase tracking-widest">
+            Gerado por Luiz Gustavo Andrade Santos, app feito 100% com IA. <br/>
+            Todos os direitos reservados ao Google Ai Studio.
+          </p>
+        </motion.div>
       </div>
     );
   }
+
   // Mode Selector
   if (bootStage === 'selector') {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 p-6">
-        <div className="max-w-2xl w-full space-y-12 text-center">
-          <div className="space-y-2">
-            <h2 className="text-4xl font-bold text-white">Bem-vindo ao VerdeGrana</h2>
-            <p className="text-slate-400">Escolha como deseja visualizar suas finanças</p>
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 p-6 overflow-y-auto">
+        <div className="max-w-2xl w-full space-y-12 text-center py-10">
+          <div className="space-y-4">
+            <h2 className="text-4xl font-black text-white tracking-tight">Escolha sua Plataforma</h2>
+            <p className="text-slate-400">Otimize a interface para o seu uso diário</p>
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <button 
               onClick={() => { setMode('desktop'); setBootStage('source'); }}
-              className="glass p-10 rounded-[3rem] group hover:bg-emerald-500/10 transition-all border border-white/5 active:scale-95"
+              className="glass p-10 rounded-[3rem] group hover:border-emerald-500/50 transition-all border border-white/5 active:scale-95"
             >
               <Monitor className="w-16 h-16 mx-auto mb-6 text-slate-400 group-hover:text-emerald-400 transition-colors" />
               <h3 className="text-2xl font-bold text-white mb-2">💻 Modo Desktop</h3>
-              <p className="text-sm text-slate-500">Otimizado para mouse e telas grandes</p>
+              <p className="text-sm text-slate-500">Multijanelas e atalhos rápidos</p>
             </button>
             
             <button 
               onClick={() => { setMode('mobile'); setBootStage('source'); }}
-              className="glass p-10 rounded-[3rem] group hover:bg-emerald-500/10 transition-all border border-white/5 active:scale-95"
+              className="glass p-10 rounded-[3rem] group hover:border-emerald-500/50 transition-all border border-white/5 active:scale-95"
             >
               <Smartphone className="w-16 h-16 mx-auto mb-6 text-slate-400 group-hover:text-emerald-400 transition-colors" />
               <h3 className="text-2xl font-bold text-white mb-2">📱 Modo Mobile</h3>
-              <p className="text-sm text-slate-500">Experiência touch-first fluida</p>
+              <p className="text-sm text-slate-500">Touch-first e navegação inferior</p>
             </button>
           </div>
         </div>
@@ -445,14 +496,14 @@ export default function App() {
   // Source Selector
   if (bootStage === 'source') {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 p-6">
-        <div className="max-w-md w-full space-y-8 text-center glass p-12 rounded-[3.5rem]">
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 p-6 overflow-y-auto">
+        <div className="max-w-md w-full space-y-8 text-center glass p-12 rounded-[3.5rem] border border-white/5">
           <div className="w-20 h-20 bg-emerald-500/20 rounded-3xl mx-auto flex items-center justify-center">
             <FolderSync className="w-10 h-10 text-emerald-500" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-3xl font-bold text-white">Onde estão seus dados?</h2>
-            <p className="text-slate-400 text-sm">Sincronize com uma pasta local para persistência real e backup automático.</p>
+            <h2 className="text-3xl font-black text-white tracking-tight">Como deseja prosseguir?</h2>
+            <p className="text-slate-400 text-sm">A sincronização local garante que seus dados fiquem salvos no seu dispositivo.</p>
           </div>
           
           <div className="flex flex-col gap-4">
@@ -460,14 +511,17 @@ export default function App() {
               onClick={handleSelectDirectory}
               className="w-full py-5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold transition-all shadow-xl shadow-emerald-600/20 active:scale-95 flex items-center justify-center gap-3"
             >
-              <FolderSync className="w-6 h-6" /> Selecionar Pasta de Dados
+              <RefreshCw className="w-6 h-6" /> Sincronizar Meus Dados
             </button>
+            <p className="text-[10px] text-emerald-500/60 font-bold uppercase tracking-widest">Recomendado</p>
+            
             <button 
-              onClick={skipFolderSync}
-              className="w-full py-5 bg-white/5 hover:bg-white/10 text-slate-300 rounded-2xl font-medium transition-all active:scale-95"
+              onClick={startDemoMode}
+              className="w-full py-5 bg-white/5 hover:bg-white/10 text-slate-300 rounded-2xl font-medium transition-all active:scale-95 mt-4"
             >
-              Usar apenas Navegador (Offline)
+              Testar Site (Trial)
             </button>
+            <p className="text-[10px] text-rose-500/60 font-bold uppercase tracking-widest">Não recomendado - Dados não serão salvos</p>
           </div>
         </div>
       </div>
@@ -565,51 +619,72 @@ export default function App() {
                   </div>
                 ) : (
                   <>
-                    <Card className="col-span-12 lg:col-span-8 h-96 p-8">
+                    <Card className="col-span-12 lg:col-span-8 h-96 p-8 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2" />
                       <h3 className="font-bold text-lg mb-6">Fluxo de Caixa</h3>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                          <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                          <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                          <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                          <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} />
-                          <Bar dataKey="expense" fill="#f43f5e" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
+                      {isChartReady ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
+                            <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                            <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                            <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
+                            <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="expense" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                        </div>
+                      )}
                     </Card>
 
                     <Card className="col-span-12 lg:col-span-4 h-96 p-8 relative overflow-hidden">
+                      <div className="absolute bottom-0 left-0 w-32 h-32 bg-rose-500/5 blur-[50px] rounded-full translate-y-1/2 -translate-x-1/2" />
                       <h3 className="font-bold text-lg mb-6">Categorias</h3>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={categoryData}
-                            cx="50%" cy="50%"
-                            innerRadius={70} outerRadius={100}
-                            paddingAngle={8} dataKey="value"
-                          >
-                            {categoryData.map((_, i) => <Cell key={i} fill={['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'][i % 5]} />)}
-                          </Pie>
-                          <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                        </PieChart>
-                      </ResponsiveContainer>
+                      {isChartReady ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={categoryData}
+                              cx="50%" cy="50%"
+                              innerRadius={70} outerRadius={100}
+                              paddingAngle={8} dataKey="value"
+                            >
+                              {categoryData.map((_, i) => <Cell key={i} fill={['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'][i % 5]} />)}
+                            </Pie>
+                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                        </div>
+                      )}
                       <div className="absolute inset-x-0 bottom-8 text-center pointer-events-none">
                         <p className="text-[10px] uppercase font-bold text-slate-500">Principais Gastos</p>
                       </div>
                     </Card>
 
                     {mode === 'desktop' && (
-                      <Card className="col-span-12 p-8 h-80">
+                      <Card className="col-span-12 p-8 h-80 relative overflow-hidden">
+                        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
                         <h3 className="font-bold text-lg mb-6">Tendência de Gastos</h3>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                            <XAxis dataKey="name" stroke="#475569" fontSize={10} />
-                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            <Line type="monotone" dataKey="expense" stroke="#f43f5e" strokeWidth={3} dot={{ fill: '#f43f5e', r: 4 }} />
-                          </LineChart>
-                        </ResponsiveContainer>
+                        {isChartReady ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
+                              <XAxis dataKey="name" stroke="#475569" fontSize={10} />
+                              <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
+                              <Line type="monotone" dataKey="expense" stroke="#f43f5e" strokeWidth={3} dot={{ fill: '#f43f5e', r: 4 }} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                          </div>
+                        )}
                       </Card>
                     )}
                   </>

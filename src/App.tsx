@@ -106,7 +106,7 @@ interface AnalyticsConfig {
 let dbInstance: any = null;
 
 export default function App() {
-  const [bootStage, setBootStage] = useState<'splash' | 'selector' | 'source' | 'ready'>('splash');
+  const [bootStage, setBootStage] = useState<'splash' | 'selector' | 'source' | 'welcome' | 'ready'>('splash');
   const [mode, setMode] = useState<AppMode>('desktop');
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('reports');
@@ -141,6 +141,7 @@ export default function App() {
   const [isComparisonModalOpen, setIsComparisonModalOpen] = useState(false);
   const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [donutType, setDonutType] = useState<'saída' | 'entrada'>('saída');
   const [isChartReady, setIsChartReady] = useState(false);
   const [wipeStep, setWipeStep] = useState(0);
   const [wipeConfirmText, setWipeConfirmText] = useState('');
@@ -245,19 +246,17 @@ export default function App() {
         
         if (savedState.workspaceHandle) {
           setDirHandle(savedState.workspaceHandle);
-          // Auto-trigger permission if we have a handle
+          // If we have a handle, show the welcome screen to request permission
           setIsFolderPermissionMissing(true);
+          setBootStage('welcome');
+          return;
         }
 
         if (savedState.mode) {
           setMode(savedState.mode);
         }
-
-        // If we have a saved state but no handle, we still might need selector
-        setBootStage('selector');
-      } else {
-        setBootStage('selector');
       }
+      setBootStage('selector');
     };
     boot();
   }, []);
@@ -279,7 +278,7 @@ export default function App() {
       // @ts-ignore
       const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
-        await writeToFile(dirHandle, { transactions, categories });
+        await writeToFile(handle, { transactions, categories });
       } else {
         setIsFolderPermissionMissing(true);
       }
@@ -296,8 +295,10 @@ export default function App() {
       const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
         setIsFolderPermissionMissing(false);
-        await readFromFile(dirHandle);
-        setBootStage('ready');
+        const success = await readFromFile(dirHandle);
+        if (success) {
+          setBootStage('ready');
+        }
       }
     } catch (e) {
       toast.error('Não foi possível obter permissão da pasta.');
@@ -309,11 +310,10 @@ export default function App() {
       // @ts-ignore
       const handle = await window.showDirectoryPicker();
       setDirHandle(handle);
-      const success = await readFromFile(handle, true);
-      if (success) {
-        setBootStage('ready');
-        toast.success('Pasta de dados sincronizada!');
-      }
+      // After selecting, we transition to the welcome screen for final handshake
+      setIsFolderPermissionMissing(true);
+      setBootStage('welcome');
+      toast.success('Diretório selecionado com sucesso!');
     } catch (e) {
       toast.error('Erro ao selecionar pasta.');
     }
@@ -465,10 +465,22 @@ export default function App() {
 
   const categoryData = useMemo(() => {
     const expByCat: Record<string, number> = {};
-    currentTransactions.filter(t => t.type === 'saída').forEach(t => {
-      expByCat[t.category] = (expByCat[t.category] || 0) + t.value;
+    const incByCat: Record<string, number> = {};
+    
+    currentTransactions.forEach(t => {
+      if (t.type === 'saída') {
+        expByCat[t.category] = (expByCat[t.category] || 0) + t.value;
+      } else {
+        incByCat[t.category] = (incByCat[t.category] || 0) + t.value;
+      }
     });
-    return Object.entries(expByCat).map(([name, value]) => ({ name, value }));
+
+    return Object.keys({ ...expByCat, ...incByCat }).map(name => ({
+      name,
+      expense: expByCat[name] || 0,
+      income: incByCat[name] || 0,
+      value: expByCat[name] || 0 // Keep value for pie compatibility
+    }));
   }, [currentTransactions]);
 
   const filteredTransactions = useMemo(() => {
@@ -487,22 +499,22 @@ export default function App() {
    const comparisonData = useMemo(() => {
     if (analyticsConfig.compareCategories.length === 0) return [];
     
-    // Last 6 points (days/months) for the selected categories
+    // Last points for the selected categories
     const points = chartData.map(d => d.name);
     return points.map(p => {
        const item: any = { name: p };
        analyticsConfig.compareCategories.forEach(cat => {
-          const catTransactions = transactions.filter(t => 
-            t.category === cat && 
-            t.type === 'saída'
-          );
+          const catTransactions = transactions.filter(t => t.category === cat);
           
-          item[cat] = catTransactions.filter(t => {
+          const filtered = catTransactions.filter(t => {
             const d = new Date(t.date);
             if (analyticsConfig.granularity === 'month') return d.toLocaleString('pt-BR', { month: 'short' }) === p;
             if (analyticsConfig.granularity === 'day') return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) === p;
             return d.getFullYear().toString() === p;
-          }).reduce((acc, it) => acc + it.value, 0);
+          });
+
+          item[`${cat}_expense`] = filtered.filter(t => t.type === 'saída').reduce((acc, it) => acc + it.value, 0);
+          item[`${cat}_income`] = filtered.filter(t => t.type === 'entrada').reduce((acc, it) => acc + it.value, 0);
        });
        return item;
     });
@@ -561,21 +573,24 @@ export default function App() {
   // Mode Selector
   if (bootStage === 'selector') {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 p-6 overflow-y-auto">
-        <div className="max-w-2xl w-full space-y-12 text-center py-10">
-          <div className="space-y-4">
-            <h2 className="text-4xl font-black text-white tracking-tight">Escolha sua Plataforma</h2>
-            <p className="text-slate-400">Otimize a interface para o seu uso diário</p>
+      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6 sm:p-0 overflow-y-auto">
+        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-4xl w-full text-center space-y-12">
+          <div className="space-y-6">
+            <div className="p-4 bg-emerald-500 rounded-[2rem] w-fit mx-auto shadow-2xl shadow-emerald-500/30">
+              <Leaf className="w-12 h-12 text-white" />
+            </div>
+            <h1 className="text-6xl font-black text-white tracking-tighter leading-none uppercase">VerdeGrana</h1>
+            <p className="text-xl text-slate-400 font-medium max-w-lg mx-auto">Finanças inteligentes, 100% locais.</p>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 px-6">
             <button 
               onClick={() => { setMode('desktop'); setBootStage('source'); }}
               className="glass p-10 rounded-[3rem] group hover:border-emerald-500/50 transition-all border border-white/5 active:scale-95"
             >
               <Monitor className="w-16 h-16 mx-auto mb-6 text-slate-400 group-hover:text-emerald-400 transition-colors" />
-              <h3 className="text-2xl font-bold text-white mb-2">💻 Modo Desktop</h3>
-              <p className="text-sm text-slate-500">Multijanelas e atalhos rápidos</p>
+              <h3 className="text-2xl font-bold text-white mb-1 uppercase tracking-tight">Modo Desktop</h3>
+              <p className="text-sm text-slate-500 font-medium italic">Multijanelas e atalhos rápidos</p>
             </button>
             
             <button 
@@ -583,11 +598,19 @@ export default function App() {
               className="glass p-10 rounded-[3rem] group hover:border-emerald-500/50 transition-all border border-white/5 active:scale-95"
             >
               <Smartphone className="w-16 h-16 mx-auto mb-6 text-slate-400 group-hover:text-emerald-400 transition-colors" />
-              <h3 className="text-2xl font-bold text-white mb-2">📱 Modo Mobile</h3>
-              <p className="text-sm text-slate-500">Touch-first e navegação inferior</p>
+              <h3 className="text-2xl font-bold text-white mb-1 uppercase tracking-tight">Modo Mobile</h3>
+              <p className="text-sm text-slate-500 font-medium italic">Touch-first e navegação inferior</p>
             </button>
           </div>
-        </div>
+
+          <div className="pt-8 border-t border-white/5">
+             <p className="text-[11px] text-slate-600 font-bold uppercase tracking-[0.25em] leading-relaxed">
+               Gerado por Luiz Gustavo Andrade Santos<br/>
+               App feito 100% com IA<br/>
+               Todos os direitos reservados ao Google AI Studio
+             </p>
+          </div>
+        </motion.div>
       </div>
     );
   }
@@ -595,34 +618,83 @@ export default function App() {
   // Source Selector
   if (bootStage === 'source') {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 p-6 overflow-y-auto">
-        <div className="max-w-md w-full space-y-8 text-center glass p-12 rounded-[3.5rem] border border-white/5">
-          <div className="w-20 h-20 bg-emerald-500/20 rounded-3xl mx-auto flex items-center justify-center">
-            <FolderSync className="w-10 h-10 text-emerald-500" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-3xl font-black text-white tracking-tight">Como deseja prosseguir?</h2>
-            <p className="text-slate-400 text-sm">A sincronização local garante que seus dados fiquem salvos no seu dispositivo.</p>
+      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6 sm:p-0 overflow-y-auto">
+        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full glass p-10 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-10">
+          <div className="space-y-4">
+            <div className="w-20 h-20 bg-emerald-500/20 rounded-[2rem] mx-auto flex items-center justify-center">
+              <FolderSync className="w-10 h-10 text-emerald-500" />
+            </div>
+            <h2 className="text-3xl font-black text-white tracking-tighter uppercase leading-tight">Escolha sua Fonte de Dados</h2>
+            <p className="text-slate-400 text-sm leading-relaxed">A sincronização mantém seus dados seguros e privados no seu dispositivo.</p>
           </div>
           
-          <div className="flex flex-col gap-4">
-            <button 
+          <div className="space-y-4">
+             <button 
               onClick={handleSelectDirectory}
-              className="w-full py-5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold transition-all shadow-xl shadow-emerald-600/20 active:scale-95 flex items-center justify-center gap-3"
-            >
-              <RefreshCw className="w-6 h-6" /> Sincronizar Meus Dados
-            </button>
-            <p className="text-[10px] text-emerald-500/60 font-bold uppercase tracking-widest">Recomendado</p>
-            
-            <button 
-              onClick={startDemoMode}
-              className="w-full py-5 bg-white/5 hover:bg-white/10 text-slate-300 rounded-2xl font-medium transition-all active:scale-95 mt-4"
-            >
-              Testar Site (Trial)
-            </button>
-            <p className="text-[10px] text-rose-500/60 font-bold uppercase tracking-widest">Não recomendado - Dados não serão salvos</p>
+              className="w-full py-6 bg-emerald-600 hover:bg-emerald-500 text-white rounded-3xl font-black text-sm uppercase transition-all shadow-xl shadow-emerald-600/20 active:scale-95 flex items-center justify-center gap-3"
+             >
+               <RefreshCw className="w-6 h-6" /> Sincronizar Meus Dados
+             </button>
+             
+             <div className="relative py-4">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
+                <div className="relative flex justify-center text-[10px] uppercase font-black text-slate-600"><span className="bg-slate-900 px-4">OU</span></div>
+             </div>
+
+             <div className="space-y-3">
+               <button 
+                onClick={startDemoMode}
+                className="w-full py-5 bg-white/5 hover:bg-white/10 text-slate-300 rounded-2xl font-black text-xs uppercase transition-all active:scale-95"
+               >
+                 Testar Site (Trial)
+               </button>
+               <p className="text-[10px] text-rose-500/60 font-bold uppercase tracking-widest leading-relaxed">Não recomendado - Dados não serão salvos permanentemente</p>
+             </div>
           </div>
-        </div>
+          
+          <button onClick={() => setBootStage('selector')} className="text-[10px] font-black text-slate-500 hover:text-white transition-colors uppercase tracking-widest flex items-center justify-center gap-2 mx-auto">
+            <ArrowLeft className="w-3 h-3" /> Voltar ao Início
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (bootStage === 'welcome') {
+    return (
+      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6 sm:p-0 overflow-y-auto">
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full glass p-10 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-8">
+          <div className="space-y-4">
+            <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20">
+               <UserCheck className="w-12 h-12" />
+            </div>
+            <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">BEM-VINDO DE VOLTA!</h1>
+            <p className="text-slate-400 text-sm leading-relaxed px-4">Detectamos sua pasta de sincronização. Clique para carregar seus dados financeiros.</p>
+          </div>
+
+          <div className="bg-emerald-500/5 p-5 rounded-3xl border border-emerald-500/10 text-left flex items-center gap-4">
+             <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-500"><Folder className="w-5 h-5" /></div>
+             <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Pasta Sincronizada</p>
+                <p className="text-xs text-slate-400 truncate font-mono">{dirHandle?.name || 'Local de Dados'}</p>
+             </div>
+          </div>
+
+          <div className="space-y-4">
+             <button 
+              onClick={handleRequestFolderPermission}
+              className="w-full py-6 bg-emerald-600 rounded-3xl font-black text-white hover:bg-emerald-500 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-xl shadow-emerald-600/20"
+             >
+               ACESSAR MEU PAINEL <ArrowRight className="w-5 h-5" />
+             </button>
+             <button 
+              onClick={() => setBootStage('selector')}
+              className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-slate-500 text-xs uppercase hover:bg-white/10 transition-all active:scale-95"
+             >
+               TROCAR FONTE DE DADOS
+             </button>
+          </div>
+        </motion.div>
       </div>
     );
   }
@@ -790,7 +862,7 @@ export default function App() {
                 ) : (
                   <>
                     {analyticsConfig.compareCategories.length > 0 && (
-                      <Card className="col-span-12 p-8 h-[400px] relative overflow-hidden">
+                      <Card className="col-span-12 p-8 h-[450px] relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-4">
                           <button 
                             onClick={() => setAnalyticsConfig(p => ({ ...p, compareCategories: [] }))}
@@ -799,8 +871,8 @@ export default function App() {
                             <X className="w-4 h-4" />
                           </button>
                         </div>
-                        <h3 className="font-bold text-lg mb-6 text-white tracking-tight flex items-center gap-3">
-                           <BarChart2 className="w-5 h-5 text-emerald-400" /> Comparativo de Categorias
+                        <h3 className="font-bold text-lg mb-6 text-white tracking-tight flex items-center gap-3 uppercase">
+                           <BarChart2 className="w-5 h-5 text-emerald-400" /> Detalhado por Categoria
                         </h3>
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={comparisonData}>
@@ -810,21 +882,31 @@ export default function App() {
                             <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
                             <Legend verticalAlign="top" height={36}/>
                             {analyticsConfig.compareCategories.map((cat, i) => (
-                              <Bar 
-                                key={cat} 
-                                dataKey={cat} 
-                                fill={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#f43f5e', '#06b6d4', '#d946ef'][i % 7]} 
-                                radius={[4, 4, 0, 0]} 
-                              />
+                              <React.Fragment key={cat}>
+                                <Bar 
+                                  dataKey={`${cat}_expense`} 
+                                  name={`${cat} (Despesa)`}
+                                  fill="#f43f5e" 
+                                  fillOpacity={0.8 - (i * 0.1)}
+                                  radius={[4, 4, 0, 0]} 
+                                />
+                                <Bar 
+                                  dataKey={`${cat}_income`} 
+                                  name={`${cat} (Receita)`}
+                                  fill="#10b981" 
+                                  fillOpacity={0.8 - (i * 0.1)}
+                                  radius={[4, 4, 0, 0]} 
+                                />
+                              </React.Fragment>
                             ))}
                           </BarChart>
                         </ResponsiveContainer>
                       </Card>
                     )}
 
-                    <Card className="col-span-12 lg:col-span-8 h-96 p-8 relative overflow-hidden">
+                    <Card className="col-span-12 lg:col-span-8 h-[450px] p-8 relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2" />
-                      <h3 className="font-bold text-lg mb-6">Fluxo de Caixa</h3>
+                      <h3 className="font-bold text-lg mb-6 uppercase tracking-tighter">Fluxo de Caixa Consolidado</h3>
                       {isChartReady ? (
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={chartData}>
@@ -832,8 +914,9 @@ export default function App() {
                             <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
                             <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
                             <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            <Bar dataKey="income" name="Receita" fill="#10b981" radius={[4, 4, 0, 0]} />
-                            <Bar dataKey="expense" name="Despesa" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                            <Legend verticalAlign="top" height={36}/>
+                            <Bar dataKey="income" name="Receita" fill="#10b981" radius={[6, 6, 0, 0]} />
+                            <Bar dataKey="expense" name="Despesa" fill="#f43f5e" radius={[6, 6, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                       ) : (
@@ -843,23 +926,40 @@ export default function App() {
                       )}
                     </Card>
 
-                    <Card className="col-span-12 lg:col-span-4 h-[500px] p-8 relative overflow-hidden flex flex-col">
-                      <div className="absolute bottom-0 left-0 w-32 h-32 bg-rose-500/5 blur-[50px] rounded-full translate-y-1/2 -translate-x-1/2" />
-                      <div className="flex justify-between items-start mb-4">
-                        <h3 className="font-bold text-lg">Mapa de Gastos</h3>
-                        <div className="flex bg-white/5 p-1 rounded-lg border border-white/10">
-                           <button 
-                            onClick={() => setDonutColorMode('unique')}
-                            className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'unique' ? "bg-emerald-500 text-white" : "text-slate-500")}
-                           >
-                             CORES
-                           </button>
-                           <button 
-                            onClick={() => setDonutColorMode('flow')}
-                            className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'flow' ? "bg-emerald-500 text-white" : "text-slate-500")}
-                           >
-                             FLUXO
-                           </button>
+                    <Card className="col-span-12 lg:col-span-4 h-[450px] p-8 relative overflow-hidden flex flex-col">
+                      <div className="absolute bottom-0 left-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full translate-y-1/2 -translate-x-1/2" />
+                      <div className="flex flex-col gap-4 mb-6">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-black text-lg uppercase tracking-tighter">Mapa Geométrico</h3>
+                           <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+                              <button 
+                                onClick={() => setDonutColorMode('unique')}
+                                className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'unique' ? "bg-white/10 text-white" : "text-slate-500")}
+                              >
+                                ELEGANT
+                              </button>
+                              <button 
+                                onClick={() => setDonutColorMode('flow')}
+                                className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'flow' ? "bg-white/10 text-white" : "text-slate-500")}
+                              >
+                                VIBRANT
+                              </button>
+                           </div>
+                        </div>
+                        
+                        <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
+                            <button 
+                              onClick={() => setDonutType('saída')}
+                              className={cn("flex-1 py-2 text-[10px] font-black rounded-xl transition-all", donutType === 'saída' ? "bg-rose-500 text-white" : "text-slate-500")}
+                            >
+                              DESPESAS
+                            </button>
+                            <button 
+                              onClick={() => setDonutType('entrada')}
+                              className={cn("flex-1 py-2 text-[10px] font-black rounded-xl transition-all", donutType === 'entrada' ? "bg-emerald-500 text-white" : "text-slate-500")}
+                            >
+                              RECEITAS
+                            </button>
                         </div>
                       </div>
                       
@@ -870,18 +970,16 @@ export default function App() {
                               <Pie
                                 data={categoryData}
                                 cx="50%" cy="50%"
-                                innerRadius={70} outerRadius={90}
-                                paddingAngle={5} dataKey="value"
+                                innerRadius={70} outerRadius={100}
+                                paddingAngle={2} 
+                                dataKey={donutType === 'saída' ? 'expense' : 'income'}
                                 stroke="none"
                               >
                                 {categoryData.map((entry, i) => (
                                   <Cell 
                                     key={i} 
-                                    fill={donutColorMode === 'unique' 
-                                      ? ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#f43f5e', '#06b6d4', '#d946ef'][i % 7]
-                                      : '#f43f5e'
-                                    } 
-                                    fillOpacity={donutColorMode === 'unique' ? 1 : 1 - (i * 0.15)}
+                                    fill={donutType === 'saída' ? '#f43f5e' : '#10b981'} 
+                                    fillOpacity={donutColorMode === 'unique' ? 0.3 + (i * 0.1) : 1 - (i * 0.1)}
                                   />
                                 ))}
                               </Pie>
@@ -896,63 +994,49 @@ export default function App() {
                       </div>
 
                       <div className="mt-4 space-y-2 overflow-y-auto max-h-32 custom-scrollbar pr-2">
-                         {categoryData.sort((a, b) => b.value - a.value).map((cat, i) => (
+                         {categoryData.filter(c => donutType === 'saída' ? c.expense > 0 : c.income > 0).sort((a, b) => (donutType === 'saída' ? b.expense - a.expense : b.income - a.income)).map((cat, i) => (
                            <div key={cat.name} className="flex items-center justify-between text-[10px] bg-white/5 p-2 rounded-xl border border-white/5">
                              <div className="flex items-center gap-2">
-                               <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: donutColorMode === 'unique' ? ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#f43f5e', '#06b6d4', '#d946ef'][i % 7] : '#f43f5e' }} />
-                               <span className="font-bold text-slate-400 truncate max-w-[100px]">{cat.name}</span>
+                               <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: donutType === 'saída' ? '#f43f5e' : '#10b981', opacity: donutColorMode === 'unique' ? 0.3 + (i * 0.1) : 1 - (i * 0.1) }} />
+                               <span className="font-bold text-slate-400 truncate max-w-[100px] tracking-tight">{cat.name}</span>
                              </div>
-                             <span className="font-black text-white">{formatCurrency(cat.value)}</span>
+                             <span className="font-black text-white">{formatCurrency(donutType === 'saída' ? cat.expense : cat.income)}</span>
                            </div>
                          ))}
                       </div>
                     </Card>
 
-                    {mode === 'desktop' && (
-                      <Card className="col-span-12 p-8 h-80 relative overflow-hidden">
-                        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
-                        <h3 className="font-bold text-lg mb-6">Tendência de Gastos</h3>
-                        {isChartReady ? (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={chartData}>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                              <XAxis dataKey="name" stroke="#475569" fontSize={10} />
-                              <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                              <Line type="monotone" dataKey="expense" name="Despesa" stroke="#f43f5e" strokeWidth={3} dot={{ fill: '#f43f5e', r: 4 }} />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
-                          </div>
-                        )}
-                      </Card>
-                    )}
-
-                    {analyticsConfig.compareCategories.length > 0 && (
-                      <Card className="col-span-12 p-10 h-[500px]">
-                        <h3 className="font-bold text-xl mb-8">Comparativo Detalhado de Categorias</h3>
+                    <Card className="col-span-12 p-10 h-[400px] relative overflow-hidden">
+                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+                      <h3 className="font-black text-lg mb-8 uppercase tracking-tighter">Tendência & Performance</h3>
+                      {isChartReady ? (
                         <ResponsiveContainer width="100%" height="100%">
-                          <RadarChart cx="50%" cy="50%" outerRadius="80%" data={comparisonData}>
-                            <PolarGrid stroke="rgba(255,255,255,0.1)" />
-                            <PolarAngleAxis dataKey="name" stroke="#64748b" fontSize={11} />
-                            <PolarRadiusAxis stroke="rgba(255,255,255,0.05)" />
-                            {analyticsConfig.compareCategories.map((cat, i) => (
-                               <Radar 
-                                key={cat} 
-                                name={cat} 
-                                dataKey={cat} 
-                                stroke={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'][i % 4]} 
-                                fill={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'][i % 4]} 
-                                fillOpacity={0.4} 
-                               />
-                            ))}
-                            <Legend />
+                          <AreaChart data={chartData}>
+                            <defs>
+                              <linearGradient id="colorInc" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                              </linearGradient>
+                              <linearGradient id="colorExp" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
+                                <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
+                            <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                            <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
                             <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                          </RadarChart>
+                            <Legend verticalAlign="top" height={36}/>
+                            <Area type="monotone" dataKey="income" name="Performance (Receita)" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorInc)" />
+                            <Area type="monotone" dataKey="expense" name="Carga (Despesa)" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorExp)" />
+                          </AreaChart>
                         </ResponsiveContainer>
-                      </Card>
-                    )}
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                        </div>
+                      )}
+                    </Card>
                   </>
                 )}
               </motion.div>
@@ -1232,15 +1316,18 @@ Número de transações: ${currentTransactions.length}`;
                     <h3 className="text-xl font-bold text-white">Sincronização Local</h3>
                   </div>
                   <p className="text-slate-400 text-sm leading-relaxed">Conecte o VerdeGrana a uma pasta no seu computador para sincronização de arquivos em tempo real. Isso garante persistência absoluta.</p>
-                  <button onClick={handleSelectDirectory} className="mt-auto flex items-center justify-center gap-3 py-5 bg-white/5 border border-white/10 rounded-[1.5rem] group hover:bg-white/10 transition-all text-white font-bold">
+                  <button onClick={handleSelectDirectory} className="mt-auto flex items-center justify-center gap-3 py-5 bg-white/5 border border-white/10 rounded-2xl group hover:bg-white/10 transition-all text-white font-bold">
                     <FileJson className="group-hover:text-emerald-400 transition-colors" /> Configurar Folder Sync
+                  </button>
+                  <button onClick={exportData} className="flex items-center justify-center gap-3 py-4 bg-emerald-600/10 border border-emerald-500/30 rounded-xl text-emerald-400 font-bold hover:bg-emerald-600 hover:text-white transition-all text-sm">
+                    <Download className="w-4 h-4" /> Baixar Backup Local (.json)
                   </button>
                 </Card>
 
                 <Card className="p-10 flex flex-col gap-6">
                   <div className="flex items-center gap-4">
                     <div className="p-3 bg-rose-500/20 text-rose-400 rounded-2xl"><Trash2 /></div>
-                    <h3 className="text-xl font-bold text-white">Salvaguarda de Dados</h3>
+                    <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Gerencial de Dados</h3>
                   </div>
                   <div className="space-y-4">
                     {wipeStep === 0 ? (
@@ -1248,7 +1335,7 @@ Número de transações: ${currentTransactions.length}`;
                         onClick={() => setWipeStep(1)} 
                         className="w-full flex items-center justify-between p-6 bg-white/5 rounded-2xl hover:bg-rose-500/10 hover:text-rose-400 transition-all border border-white/5"
                       >
-                        <span className="font-bold">Limpar Memória do App</span>
+                        <span className="font-bold text-sm">Limpar Memória do App</span>
                         <ChevronRight />
                       </button>
                     ) : wipeStep === 1 ? (
@@ -1269,12 +1356,27 @@ Número de transações: ${currentTransactions.length}`;
                             onChange={e => setWipeConfirmText(e.target.value)}
                          />
                          <button 
+                            onClick={async () => {
+                              if (wipeConfirmText === 'DELETAR') {
+                                if (dirHandle) {
+                                  try {
+                                    const fileHandle = await dirHandle.getFileHandle(FILE_NAME, { create: true });
+                                    const writable = await fileHandle.createWritable();
+                                    await writable.write("");
+                                    await writable.close();
+                                  } catch (e) { console.error(e); }
+                                }
+                                await clearState(dbInstance);
+                                localStorage.clear();
+                                window.location.reload();
+                              }
+                            }}
                             disabled={wipeConfirmText !== 'DELETAR'}
-                            onClick={() => { localStorage.clear(); location.reload(); }} 
-                            className="w-full py-4 bg-rose-600 disabled:opacity-50 rounded-xl font-bold"
+                            className="w-full py-4 bg-rose-600 disabled:opacity-50 rounded-xl font-bold uppercase text-xs"
                          >
                             CONFIRMAR DELEÇÃO TOTAL
                          </button>
+                         <button onClick={() => setWipeStep(0)} className="w-full text-[10px] font-black text-slate-500 hover:text-white uppercase">Cancelar</button>
                       </div>
                     )}
                     
@@ -1282,49 +1384,82 @@ Número de transações: ${currentTransactions.length}`;
                       onClick={() => setBootStage('selector')} 
                       className="w-full flex items-center justify-between p-6 bg-white/5 rounded-2xl hover:bg-white/10 transition-all border border-white/5"
                     >
-                      <span className="font-bold">Retornar ao Seletor de Modo</span>
+                      <span className="font-bold text-sm">Retornar ao Seletor de Modo</span>
                       <Monitor className="text-slate-500" />
                     </button>
                   </div>
-                  <button onClick={exportData} className="mt-auto flex items-center justify-center gap-3 py-5 bg-emerald-600/10 border border-emerald-500/30 rounded-[1.5rem] text-emerald-400 font-bold hover:bg-emerald-600 hover:text-white transition-all">
-                    <Download /> Baixar Backup Local (.json)
-                  </button>
+                </Card>
+
+                <Card className="col-span-1 md:col-span-2 p-10 space-y-8 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 p-10 opacity-[0.03] group-hover:opacity-[0.08] transition-opacity"><Ghost className="w-40 h-40" /></div>
+                  <div className="flex items-center gap-6 relative">
+                    <div className="p-4 bg-emerald-500/20 text-emerald-400 rounded-[2rem]"><User className="w-8 h-8" /></div>
+                    <div className="space-y-1">
+                      <h3 className="text-3xl font-black text-white tracking-tighter uppercase">Sobre o Autor</h3>
+                      <p className="text-emerald-500 font-bold uppercase text-[10px] tracking-widest">Luiz Gustavo Andrade Santos</p>
+                    </div>
+                  </div>
+                  <div className="space-y-6 relative max-w-4xl">
+                    <p className="text-lg text-slate-300 font-medium leading-relaxed">
+                      Este app foi idealizado e desenvolvido por <strong className="text-white">Luiz Gustavo Andrade Santos</strong>, utilizando 100% de Inteligência Artificial para criar uma ferramenta de gestão financeira acessível e moderna. Espero que este app ajude no seu controle financeiro! Caso tenha sugestões de melhoria ou precise de suporte, entre em contato.
+                    </p>
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 pt-2">
+                       <a href="mailto:roogxbox@gmail.com" className="px-8 py-4 bg-emerald-600 rounded-2xl font-black text-white hover:bg-emerald-500 transition-all flex items-center gap-3">
+                         <Mail className="w-6 h-6" /> roogxbox@gmail.com
+                       </a>
+                    </div>
+                  </div>
                 </Card>
               </motion.div>
             )}
 
             {activeTab === 'about' && (
-               <motion.div key="about" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl mx-auto">
-                 <Card className="p-12 text-center space-y-10 relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/5 blur-[80px] rounded-full" />
-                    <div className="w-24 h-24 bg-emerald-500 rounded-[2.5rem] mx-auto flex items-center justify-center shadow-2xl shadow-emerald-500/40 rotate-6">
-                      <Leaf className="w-12 h-12 text-white" />
-                    </div>
-                    
-                    <div className="space-y-4">
-                      <h2 className="text-4xl font-black text-white tracking-tighter">Sobre o Autor</h2>
-                      <p className="text-slate-400 leading-relaxed">
-                         Este app foi idealizado e desenvolvido por <strong className="text-emerald-400 font-black italic">Luiz Gustavo Andrade Santos</strong>, utilizando 100% de Inteligência Artificial para criar uma ferramenta de gestão financeira acessível e moderna.
-                      </p>
-                      <p className="text-slate-400 leading-relaxed">
-                         Espero que este app ajude no seu controle financeiro! Caso tenha sugestões de melhoria ou precise de suporte, entre em contato através do e-mail abaixo.
-                      </p>
-                    </div>
+              <motion.div key="about" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-4xl mx-auto py-10">
+                <div className="text-center space-y-10">
+                   <div className="p-6 bg-emerald-500 rounded-[3rem] w-fit mx-auto shadow-2xl shadow-emerald-500/30">
+                      <Leaf className="w-16 h-16 text-white" />
+                   </div>
+                   <div className="space-y-4">
+                     <h1 className="text-6xl font-black text-white tracking-tighter uppercase leading-none">VerdeGrana</h1>
+                     <p className="text-emerald-500 font-bold uppercase tracking-[0.3em] text-sm">Finanças & Tecnologia</p>
+                   </div>
+                   
+                   <div className="glass p-12 rounded-[4rem] border border-white/5 space-y-8 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 p-8 opacity-[0.03] rotate-12"><Ghost className="w-64 h-64" /></div>
+                      <div className="space-y-6 relative">
+                        <p className="text-2xl text-slate-300 font-medium leading-relaxed">
+                          Este aplicativo é um projeto experimental que combina as melhores práticas de **UI/UX** com o poder de processamento da **Inteligência Artificial**.
+                        </p>
+                        <div className="h-px w-20 bg-emerald-500 mx-auto opacity-30" />
+                        <p className="text-lg text-slate-400 italic">
+                          "Gerado por Luiz Gustavo Andrade Santos, app feito 100% com IA. Todos os direitos reservados ao Google AI Studio."
+                        </p>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-10">
+                         <div className="p-8 bg-white/5 rounded-[2.5rem] border border-white/5 text-center space-y-2">
+                           <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Idealização</p>
+                           <p className="text-xl font-bold text-white">Luiz Gustavo Santos</p>
+                         </div>
+                         <div className="p-8 bg-white/5 rounded-[2.5rem] border border-white/5 text-center space-y-2">
+                           <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Tecnologia</p>
+                           <p className="text-xl font-bold text-white">Gemini 1.5 Pro</p>
+                         </div>
+                      </div>
 
-                    <div className="pt-6">
-                       <a 
-                        href="mailto:roogxbox@gmail.com" 
-                        className="inline-flex items-center gap-3 px-8 py-4 bg-white/5 hover:bg-emerald-600 transition-all rounded-2xl font-bold group"
-                       >
-                         <Bot className="w-6 h-6 text-emerald-500 group-hover:text-white" /> roogxbox@gmail.com
-                       </a>
-                    </div>
-                    
-                    <div className="text-[10px] text-slate-600 uppercase font-black tracking-widest pt-10">
-                       VerdeGrana Pro v1.5.0 • © 2026
-                    </div>
-                 </Card>
-               </motion.div>
+                      <div className="pt-8 flex flex-col items-center gap-6">
+                         <p className="text-slate-500 text-sm">Precisa de suporte ou tem sugestões?</p>
+                         <a href="mailto:roogxbox@gmail.com" className="w-full sm:w-auto px-10 py-5 bg-white text-slate-900 rounded-2xl font-black text-lg hover:scale-105 transition-transform flex items-center justify-center gap-3">
+                           <Mail className="w-6 h-6" /> roogxbox@gmail.com
+                         </a>
+                      </div>
+                   </div>
+
+                   <p className="text-[11px] text-slate-600 font-bold uppercase tracking-[0.5em] pt-10 animate-pulse">
+                     Versão 1.5.0 Stable
+                   </p>
+                </div>
+              </motion.div>
             )}
           </AnimatePresence>
         </section>

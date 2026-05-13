@@ -417,9 +417,7 @@ export default function App() {
     const expenses = currentTransactions.filter(t => t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
     const total = income - expenses;
     
-    let balanceColor = 'text-slate-400';
-    if (total > 0) balanceColor = 'text-emerald-400';
-    if (total < 0) balanceColor = 'text-rose-400';
+    const balanceColor = total > 0 ? 'text-emerald-400' : total < 0 ? 'text-rose-500' : 'text-slate-400';
 
     return { total, income, expenses, balanceColor };
   }, [currentTransactions]);
@@ -982,8 +980,11 @@ export default function App() {
                                 {categoryData.map((entry, i) => (
                                   <Cell 
                                     key={i} 
-                                    fill={donutType === 'saída' ? '#f43f5e' : '#10b981'} 
-                                    fillOpacity={donutColorMode === 'unique' ? 0.3 + (i * 0.1) : 1 - (i * 0.1)}
+                                    fill={donutColorMode === 'unique' 
+                                      ? (donutType === 'saída' ? ['#f43f5e', '#e11d48', '#be123c', '#9f1239'][i % 4] : ['#10b981', '#059669', '#047857', '#065f46'][i % 4])
+                                      : (donutType === 'saída' ? '#f43f5e' : '#10b981')
+                                    } 
+                                    fillOpacity={donutColorMode === 'unique' ? 1 : (1 - (i * 0.1))}
                                   />
                                 ))}
                               </Pie>
@@ -1227,7 +1228,7 @@ Número de transações: ${currentTransactions.length}`;
                       }}
                       className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-3"
                     >
-                      <TrendingUp className="w-5 h-5 text-emerald-400" /> Gerar Dados para Relatório
+                      <TrendingUp className="w-5 h-5 text-emerald-400" /> Gerar Relatório para IA
                     </button>
                   </div>
                 </Card>
@@ -1399,13 +1400,13 @@ Número de transações: ${currentTransactions.length}`;
                   <div className="flex items-center gap-6 relative">
                     <div className="p-4 bg-emerald-500/20 text-emerald-400 rounded-[2rem]"><User className="w-8 h-8" /></div>
                     <div className="space-y-1">
-                      <h3 className="text-3xl font-black text-white tracking-tighter uppercase">Sobre o Autor</h3>
+                      <h3 className="text-3xl font-black text-white tracking-tighter uppercase">Sobre o VerdeGrana</h3>
                       <p className="text-emerald-500 font-bold uppercase text-[10px] tracking-widest">Luiz Gustavo Andrade Santos</p>
                     </div>
                   </div>
                   <div className="space-y-6 relative max-w-4xl">
                     <p className="text-lg text-slate-300 font-medium leading-relaxed">
-                      Este app foi idealizado e desenvolvido por <strong className="text-white">Luiz Gustavo Andrade Santos</strong>, utilizando 100% de Inteligência Artificial para criar uma ferramenta de gestão financeira acessível e moderna. Espero que este app ajude no seu controle financeiro! Caso tenha sugestões de melhoria ou precise de suporte, entre em contato.
+                      <strong className="text-white">VerdeGrana: Finanças & Tecnologia.</strong> Este aplicativo é um projeto inovador idealizado por <strong className="text-white">Luiz Gustavo Andrade Santos</strong>, desenvolvido 100% com Inteligência Artificial. Une gestão contábil moderna à praticidade do processamento de linguagem natural.
                     </p>
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 pt-2">
                        <a href="mailto:roogxbox@gmail.com" className="px-8 py-4 bg-emerald-600 rounded-2xl font-black text-white hover:bg-emerald-500 transition-all flex items-center gap-3">

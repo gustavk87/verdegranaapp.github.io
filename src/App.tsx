@@ -24,7 +24,8 @@ import {
   RefreshCw,
   MoreHorizontal,
   Home,
-  FileJson
+  FileJson,
+  BarChart2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -136,6 +137,9 @@ export default function App() {
   const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
   const [selectedTxIds, setSelectedTxIds] = useState<string[]>([]);
   const [sortConfig, setSortConfig] = useState<'date' | 'value-asc' | 'value-desc'>('date');
+  const [donutColorMode, setDonutColorMode] = useState<'unique' | 'flow'>('unique');
+  const [isComparisonModalOpen, setIsComparisonModalOpen] = useState(false);
+  const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [isChartReady, setIsChartReady] = useState(false);
   const [wipeStep, setWipeStep] = useState(0);
@@ -229,8 +233,8 @@ export default function App() {
   // --- Initial Boot & Persistence ---
   useEffect(() => {
     const boot = async () => {
-      // Stage 1: Splash (2s)
-      await new Promise(resolve => setTimeout(resolve, 2500));
+      // Stage 1: Splash (4s for readable credits)
+      await new Promise(resolve => setTimeout(resolve, 4000));
       
       dbInstance = await initDB();
       const savedState = await getState(dbInstance);
@@ -480,7 +484,7 @@ export default function App() {
     });
   }, [currentTransactions, searchTerm, categoryFilters, sortConfig]);
 
-  const comparisonData = useMemo(() => {
+   const comparisonData = useMemo(() => {
     if (analyticsConfig.compareCategories.length === 0) return [];
     
     // Last 6 points (days/months) for the selected categories
@@ -488,16 +492,21 @@ export default function App() {
     return points.map(p => {
        const item: any = { name: p };
        analyticsConfig.compareCategories.forEach(cat => {
-          item[cat] = transactions.filter(t => 
+          const catTransactions = transactions.filter(t => 
             t.category === cat && 
-            t.type === 'saída' &&
-            // Note: Simplification for demo - ideally matches labels exactly
-            new Date(t.date).toLocaleString('pt-BR', { month: 'short' }) === p
-          ).reduce((acc, it) => acc + it.value, 0);
+            t.type === 'saída'
+          );
+          
+          item[cat] = catTransactions.filter(t => {
+            const d = new Date(t.date);
+            if (analyticsConfig.granularity === 'month') return d.toLocaleString('pt-BR', { month: 'short' }) === p;
+            if (analyticsConfig.granularity === 'day') return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) === p;
+            return d.getFullYear().toString() === p;
+          }).reduce((acc, it) => acc + it.value, 0);
        });
        return item;
     });
-  }, [transactions, analyticsConfig.compareCategories, chartData]);
+  }, [transactions, analyticsConfig.compareCategories, chartData, analyticsConfig.granularity]);
 
   const exportData = () => {
     const data = JSON.stringify({ transactions, categories }, null, 2);
@@ -621,7 +630,7 @@ export default function App() {
   // Main App
   return (
     <div className={cn(
-      "h-screen w-screen overflow-hidden bg-slate-950 text-slate-200 flex",
+      "h-screen w-screen overflow-hidden bg-slate-950 text-slate-200 flex select-none",
       mode === 'mobile' ? "flex-col" : "flex-row"
     )}>
       <Toaster position="top-right" theme="dark" richColors />
@@ -754,29 +763,20 @@ export default function App() {
 
                   <div className="flex items-center gap-3">
                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Comparar Categorias:</span>
-                    <div className="flex flex-wrap gap-2">
-                       {categories.slice(0, 4).map(c => (
-                         <button 
-                          key={c.id}
-                          onClick={() => {
-                            setAnalyticsConfig(p => ({
-                              ...p,
-                              compareCategories: p.compareCategories.includes(c.name) 
-                                ? p.compareCategories.filter(name => name !== c.name)
-                                : [...p.compareCategories, c.name]
-                            }));
-                          }}
-                          className={cn(
-                            "px-3 py-1 rounded-full text-[9px] font-bold border transition-all",
-                            analyticsConfig.compareCategories.includes(c.name)
-                              ? "bg-emerald-500/20 border-emerald-500 text-emerald-400"
-                              : "bg-white/5 border-white/10 text-slate-500"
-                          )}
-                         >
-                           {c.name}
-                         </button>
-                       ))}
-                    </div>
+                    <button 
+                      onClick={() => setIsComparisonModalOpen(true)}
+                      className="flex items-center gap-2 px-4 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full text-[10px] font-black transition-all"
+                    >
+                      <Plus className="w-3 h-3" /> SELECIONAR CATEGORIAS
+                    </button>
+                    {analyticsConfig.compareCategories.length > 0 && (
+                      <button 
+                        onClick={() => setAnalyticsConfig(p => ({ ...p, compareCategories: [] }))}
+                        className="text-[9px] font-bold text-rose-500 hover:scale-105 transition-transform"
+                      >
+                        Limpar
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -789,6 +789,39 @@ export default function App() {
                   </div>
                 ) : (
                   <>
+                    {analyticsConfig.compareCategories.length > 0 && (
+                      <Card className="col-span-12 p-8 h-[400px] relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4">
+                          <button 
+                            onClick={() => setAnalyticsConfig(p => ({ ...p, compareCategories: [] }))}
+                            className="p-2 bg-white/5 hover:bg-white/10 rounded-full text-slate-500 transition-colors"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <h3 className="font-bold text-lg mb-6 text-white tracking-tight flex items-center gap-3">
+                           <BarChart2 className="w-5 h-5 text-emerald-400" /> Comparativo de Categorias
+                        </h3>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={comparisonData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
+                            <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                            <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
+                            <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
+                            <Legend verticalAlign="top" height={36}/>
+                            {analyticsConfig.compareCategories.map((cat, i) => (
+                              <Bar 
+                                key={cat} 
+                                dataKey={cat} 
+                                fill={['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#f43f5e', '#06b6d4', '#d946ef'][i % 7]} 
+                                radius={[4, 4, 0, 0]} 
+                              />
+                            ))}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Card>
+                    )}
+
                     <Card className="col-span-12 lg:col-span-8 h-96 p-8 relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-[50px] rounded-full -translate-y-1/2 translate-x-1/2" />
                       <h3 className="font-bold text-lg mb-6">Fluxo de Caixa</h3>
@@ -799,8 +832,8 @@ export default function App() {
                             <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
                             <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
                             <Tooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                            <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} />
-                            <Bar dataKey="expense" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="income" name="Receita" fill="#10b981" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="expense" name="Despesa" fill="#f43f5e" radius={[4, 4, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                       ) : (
@@ -810,30 +843,68 @@ export default function App() {
                       )}
                     </Card>
 
-                    <Card className="col-span-12 lg:col-span-4 h-96 p-8 relative overflow-hidden">
+                    <Card className="col-span-12 lg:col-span-4 h-[500px] p-8 relative overflow-hidden flex flex-col">
                       <div className="absolute bottom-0 left-0 w-32 h-32 bg-rose-500/5 blur-[50px] rounded-full translate-y-1/2 -translate-x-1/2" />
-                      <h3 className="font-bold text-lg mb-6">Categorias</h3>
-                      {isChartReady ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie
-                              data={categoryData}
-                              cx="50%" cy="50%"
-                              innerRadius={70} outerRadius={100}
-                              paddingAngle={8} dataKey="value"
-                            >
-                              {categoryData.map((_, i) => <Cell key={i} fill={['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'][i % 5]} />)}
-                            </Pie>
-                            <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                      <div className="flex justify-between items-start mb-4">
+                        <h3 className="font-bold text-lg">Mapa de Gastos</h3>
+                        <div className="flex bg-white/5 p-1 rounded-lg border border-white/10">
+                           <button 
+                            onClick={() => setDonutColorMode('unique')}
+                            className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'unique' ? "bg-emerald-500 text-white" : "text-slate-500")}
+                           >
+                             CORES
+                           </button>
+                           <button 
+                            onClick={() => setDonutColorMode('flow')}
+                            className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", donutColorMode === 'flow' ? "bg-emerald-500 text-white" : "text-slate-500")}
+                           >
+                             FLUXO
+                           </button>
                         </div>
-                      )}
-                      <div className="absolute inset-x-0 bottom-8 text-center pointer-events-none">
-                        <p className="text-[10px] uppercase font-bold text-slate-500">Principais Gastos</p>
+                      </div>
+                      
+                      <div className="flex-1 min-h-0">
+                        {isChartReady ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={categoryData}
+                                cx="50%" cy="50%"
+                                innerRadius={70} outerRadius={90}
+                                paddingAngle={5} dataKey="value"
+                                stroke="none"
+                              >
+                                {categoryData.map((entry, i) => (
+                                  <Cell 
+                                    key={i} 
+                                    fill={donutColorMode === 'unique' 
+                                      ? ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#f43f5e', '#06b6d4', '#d946ef'][i % 7]
+                                      : '#f43f5e'
+                                    } 
+                                    fillOpacity={donutColorMode === 'unique' ? 1 : 1 - (i * 0.15)}
+                                  />
+                                ))}
+                              </Pie>
+                              <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-4 space-y-2 overflow-y-auto max-h-32 custom-scrollbar pr-2">
+                         {categoryData.sort((a, b) => b.value - a.value).map((cat, i) => (
+                           <div key={cat.name} className="flex items-center justify-between text-[10px] bg-white/5 p-2 rounded-xl border border-white/5">
+                             <div className="flex items-center gap-2">
+                               <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: donutColorMode === 'unique' ? ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#f43f5e', '#06b6d4', '#d946ef'][i % 7] : '#f43f5e' }} />
+                               <span className="font-bold text-slate-400 truncate max-w-[100px]">{cat.name}</span>
+                             </div>
+                             <span className="font-black text-white">{formatCurrency(cat.value)}</span>
+                           </div>
+                         ))}
                       </div>
                     </Card>
 
@@ -847,7 +918,7 @@ export default function App() {
                               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
                               <XAxis dataKey="name" stroke="#475569" fontSize={10} />
                               <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '12px' }} />
-                              <Line type="monotone" dataKey="expense" stroke="#f43f5e" strokeWidth={3} dot={{ fill: '#f43f5e', r: 4 }} />
+                              <Line type="monotone" dataKey="expense" name="Despesa" stroke="#f43f5e" strokeWidth={3} dot={{ fill: '#f43f5e', r: 4 }} />
                             </LineChart>
                           </ResponsiveContainer>
                         ) : (
@@ -1090,7 +1161,7 @@ Número de transações: ${currentTransactions.length}`;
                         try {
                           const data = JSON.parse(area.value);
                           processImport(data);
-                          setActiveTab('dashboard');
+                          setActiveTab('reports');
                           area.value = '';
                         } catch (e) { toast.error('Falha no formato JSON.'); }
                         setIsAiProcessing(false);
@@ -1140,7 +1211,10 @@ Número de transações: ${currentTransactions.length}`;
                     {categories.map(cat => (
                       <div key={cat.id} className="group p-6 glass rounded-[2rem] border border-white/5 hover:border-emerald-500/30 transition-all flex items-center justify-between">
                         <span className="font-bold text-slate-300">{cat.name}</span>
-                        <button onClick={() => { setCategories(p => p.filter(c => c.id !== cat.id)); toast.info('Categoria removida'); }} className="opacity-0 group-hover:opacity-100 p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all">
+                        <button 
+                          onClick={() => setCategoryToDelete(cat)} 
+                          className="opacity-0 group-hover:opacity-100 p-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-all"
+                        >
                           <Trash2 className="w-5 h-5" />
                         </button>
                       </div>
@@ -1273,6 +1347,89 @@ Número de transações: ${currentTransactions.length}`;
       )}
 
       {/* FOLDER PERMISSION OVERLAY */}
+      <AnimatePresence>
+        {isComparisonModalOpen && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => setIsComparisonModalOpen(false)} />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="relative glass max-w-xl w-full p-10 rounded-[3rem] border border-white/10 shadow-2xl space-y-8">
+               <div className="flex justify-between items-center">
+                 <h2 className="text-2xl font-black text-white tracking-tighter">Comparar Categorias</h2>
+                 <button onClick={() => setIsComparisonModalOpen(false)} className="p-2 hover:bg-white/5 rounded-full"><X/></button>
+               </div>
+               
+               <div className="grid grid-cols-2 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                  {categories.map(cat => {
+                    const totalExp = transactions.filter(t => t.category === cat.name && t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
+                    const totalInc = transactions.filter(t => t.category === cat.name && t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
+                    const isSelected = analyticsConfig.compareCategories.includes(cat.name);
+                    
+                    return (
+                      <button 
+                        key={cat.id}
+                        onClick={() => {
+                          setAnalyticsConfig(p => ({
+                            ...p,
+                            compareCategories: isSelected
+                              ? p.compareCategories.filter(n => n !== cat.name)
+                              : [...p.compareCategories, cat.name]
+                          }));
+                        }}
+                        className={cn(
+                          "p-4 rounded-2xl border text-left transition-all group",
+                          isSelected ? "bg-emerald-500/20 border-emerald-500" : "bg-white/5 border-white/5 hover:border-white/20"
+                        )}
+                      >
+                         <div className="flex justify-between items-start mb-2">
+                           <span className={cn("font-bold text-sm transition-colors", isSelected ? "text-emerald-400" : "text-slate-400")}>{cat.name}</span>
+                           {isSelected && <div className="w-2 h-2 bg-emerald-500 rounded-full" />}
+                         </div>
+                         <div className="flex flex-col gap-1">
+                            <span className="text-[10px] text-emerald-500/60 font-medium">Entradas: {formatCurrency(totalInc)}</span>
+                            <span className="text-[10px] text-rose-500/60 font-medium">Saídas: {formatCurrency(totalExp)}</span>
+                         </div>
+                      </button>
+                    );
+                  })}
+               </div>
+               
+               <button onClick={() => setIsComparisonModalOpen(false)} className="w-full py-4 bg-emerald-600 rounded-2xl font-bold hover:bg-emerald-500 transition-all active:scale-95 shadow-xl shadow-emerald-500/20">
+                 Ver Comparação ({analyticsConfig.compareCategories.length})
+               </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {categoryToDelete && (
+          <div className="fixed inset-0 z-[250] flex items-center justify-center p-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" onClick={() => setCategoryToDelete(null)} />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="relative glass max-w-sm w-full p-10 rounded-[2.5rem] border border-rose-500/20 shadow-2xl text-center space-y-6">
+               <div className="w-16 h-16 bg-rose-500/20 rounded-full flex items-center justify-center mx-auto text-rose-500">
+                 <Trash2 className="w-8 h-8" />
+               </div>
+               <div className="space-y-2">
+                 <h3 className="text-xl font-bold text-white">Excluir Categoria?</h3>
+                 <p className="text-slate-400 text-sm">Tem certeza que deseja excluir <strong>"{categoryToDelete.name}"</strong>? Isso não removerá os lançamentos vinculados, mas eles ficarão sem categoria definida.</p>
+               </div>
+               <div className="flex gap-3">
+                  <button 
+                    onClick={() => {
+                      setCategories(p => p.filter(c => c.id !== categoryToDelete.id));
+                      setCategoryToDelete(null);
+                      toast.info('Categoria removida com sucesso.');
+                    }}
+                    className="flex-1 py-4 bg-rose-600 rounded-2xl font-bold hover:bg-rose-500 transition-colors"
+                  >
+                    Excluir
+                  </button>
+                  <button onClick={() => setCategoryToDelete(null)} className="flex-1 py-4 bg-white/10 rounded-2xl font-bold border border-white/10">Cancelar</button>
+               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {isFolderPermissionMissing && bootStage === 'ready' && (
           <motion.div 

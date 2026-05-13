@@ -89,7 +89,6 @@ const formatCurrency = (value: number) => {
 
 // --- Types ---
 type TransactionType = 'entrada' | 'saída';
-type AppMode = 'desktop' | 'mobile';
 
 interface Transaction {
   id: string;
@@ -183,22 +182,10 @@ const CategoryDonut = ({ data, colorMode }: {
 };
 
 const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: any[], type?: 'bar' | 'area', isPerformance?: boolean, onPointClick?: (date: string) => void }) => {
-  const [zoomLevel, setZoomLevel] = useState(1);
   const chartRef = useRef<any>(null);
 
-  const handleZoomIn = () => {
-    setZoomLevel(prev => prev * 1.2);
-    setTimeout(() => chartRef.current?.resize(), 50);
-  };
-
-  const handleZoomOut = () => {
-    setZoomLevel(prev => Math.max(1, prev * 0.8));
-    setTimeout(() => chartRef.current?.resize(), 50);
-  };
-
   const handleReset = () => {
-    setZoomLevel(1);
-    setTimeout(() => chartRef.current?.resize(), 50);
+    chartRef.current?.resetZoom();
   };
 
   const maxVal = Math.max(...data.flatMap(d => [d.income, d.expense]), 100);
@@ -235,6 +222,9 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
     responsive: true,
     maintainAspectRatio: false,
     animation: false as const,
+    layout: {
+      padding: { bottom: 25 }
+    },
     onClick: (e: any, elements: any) => {
       if (elements.length > 0 && onPointClick) {
         const index = elements[0].index;
@@ -246,9 +236,7 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
       intersect: false,
     },
     plugins: {
-      legend: {
-        display: false
-      },
+      legend: { display: false },
       tooltip: {
         backgroundColor: 'rgba(15, 23, 42, 0.95)',
         padding: 16,
@@ -270,6 +258,25 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
                `Líquido: ${formatCurrency(net)}`
              ];
            }
+        }
+      },
+      zoom: {
+        pan: {
+          enabled: true,
+          mode: 'xy' as const,
+          threshold: 10,
+        },
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          mode: 'xy' as const,
+        },
+        limits: {
+          x: {
+            min: -5,
+            max: data.length + 5,
+            minRange: 5
+          }
         }
       }
     },
@@ -323,48 +330,22 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
     }
   };
 
-  const innerWidth = zoomLevel === 1 ? '100%' : `${zoomLevel * 200}%`;
-  const innerHeight = zoomLevel === 1 ? '300px' : `${zoomLevel * 500}px`;
-
   return (
     <div className="w-full h-full relative group flex flex-col">
       <div className="flex justify-end items-center gap-2 mb-2">
          <div className="flex bg-slate-900/60 backdrop-blur-xl p-1 rounded-xl border border-white/10">
             <button 
-              onClick={handleZoomIn}
-              className="w-8 h-8 flex items-center justify-center hover:bg-white/10 rounded-lg text-white transition-all active:scale-95"
-              title="Esticar (+)"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-            <button 
-              onClick={handleZoomOut}
-              className="w-8 h-8 flex items-center justify-center hover:bg-white/10 rounded-lg text-white transition-all active:scale-95"
-              title="Achatar (-)"
-            >
-              <Minus className="w-4 h-4" />
-            </button>
-            <div className="w-[1px] h-6 my-auto bg-white/10 mx-1" />
-            <button 
               onClick={handleReset}
               className="px-3 h-8 flex items-center gap-2 hover:bg-white/10 rounded-lg text-[9px] font-black uppercase text-slate-300 transition-all"
             >
               <RefreshCw className="w-3 h-3" />
-              Ajustar Automaticamente
+              Resetar Zoom
             </button>
          </div>
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar relative bg-black/10 rounded-2xl border border-white/5 shadow-inner">
-        <div 
-          style={{ 
-            width: innerWidth, 
-            height: innerHeight,
-            minWidth: zoomLevel > 1 ? `${data.length * 50}px` : '100%',
-            transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)'
-          }}
-          className="relative"
-        >
+      <div className="flex-1 relative bg-black/10 rounded-2xl border border-white/5 shadow-inner overflow-hidden">
+        <div className="w-full h-full relative">
           {isPerformance ? (
              <ChartLine 
                ref={chartRef} 
@@ -389,6 +370,7 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
     </div>
   );
 };
+
 
 const ComparisonChart = ({ 
   data, 
@@ -506,8 +488,7 @@ const CategoryDonutSection = ({
 let dbInstance: any = null;
 
 export default function App() {
-  const [bootStage, setBootStage] = useState<'splash' | 'selector' | 'source' | 'welcome' | 'ready'>('splash');
-  const [mode, setMode] = useState<AppMode>('desktop');
+  const [bootStage, setBootStage] = useState<'splash' | 'source' | 'welcome' | 'ready'>('splash');
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('reports');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -653,12 +634,8 @@ export default function App() {
           setBootStage('welcome');
           return;
         }
-
-        if (savedState.mode) {
-          setMode(savedState.mode);
-        }
       }
-      setBootStage('selector');
+      setBootStage('source');
     };
     boot();
   }, []);
@@ -666,11 +643,11 @@ export default function App() {
   // Sync state to IDB (Instant)
   useEffect(() => {
     if (dbInstance && bootStage === 'ready' && !isDemoMode) {
-      const stateToSave = { transactions, categories, mode, workspaceHandle: dirHandle || undefined };
+      const stateToSave = { transactions, categories, workspaceHandle: dirHandle || undefined };
       saveState(dbInstance, stateToSave);
       setIsDirty(true);
     }
-  }, [transactions, categories, mode, dirHandle, bootStage, isDemoMode]);
+  }, [transactions, categories, dirHandle, bootStage, isDemoMode]);
 
   // Debounced File System Sync
   useEffect(() => {
@@ -731,23 +708,6 @@ export default function App() {
     setBootStage('ready');
     toast.info('Usando apenas armazenamento local do navegador.');
   };
-
-  // Keyboard Shortcuts (Desktop Mode)
-  useEffect(() => {
-    if (mode === 'desktop' && bootStage === 'ready') {
-      const handleKeys = (e: KeyboardEvent) => {
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-        
-        if (e.key.toLowerCase() === 'n') { e.preventDefault(); setIsAddModalOpen(true); }
-        if (e.key.toLowerCase() === 'a') { e.preventDefault(); setActiveTab('ai'); }
-        if (e.key.toLowerCase() === 's') { e.preventDefault(); exportData(); }
-      };
-      window.addEventListener('keydown', handleKeys);
-      return () => window.removeEventListener('keydown', handleKeys);
-    }
-  }, [mode, bootStage]);
-
-  // --- Core Business Logic ---
 
   // Intelligent Import Logic
   const processImport = useCallback((data: any[]) => {
@@ -1048,51 +1008,6 @@ export default function App() {
     );
   }
 
-  // Mode Selector
-  if (bootStage === 'selector') {
-    return (
-      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6 sm:p-0 overflow-y-auto">
-        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-4xl w-full text-center space-y-12">
-          <div className="space-y-6">
-            <div className="p-4 bg-emerald-500 rounded-[2rem] w-fit mx-auto shadow-2xl shadow-emerald-500/30">
-              <Leaf className="w-12 h-12 text-white" />
-            </div>
-            <h1 className="text-6xl font-black text-white tracking-tighter leading-none uppercase">VerdeGrana</h1>
-            <p className="text-xl text-slate-400 font-medium max-w-lg mx-auto">Finanças inteligentes, 100% locais.</p>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 px-6">
-            <button 
-              onClick={() => { setMode('desktop'); setBootStage('source'); }}
-              className="glass p-10 rounded-[3rem] group hover:border-emerald-500/50 transition-all border border-white/5 active:scale-95"
-            >
-              <Monitor className="w-16 h-16 mx-auto mb-6 text-slate-400 group-hover:text-emerald-400 transition-colors" />
-              <h3 className="text-2xl font-bold text-white mb-1 uppercase tracking-tight">Modo Desktop</h3>
-              <p className="text-sm text-slate-500 font-medium italic">Multijanelas e atalhos rápidos</p>
-            </button>
-            
-            <button 
-              onClick={() => { setMode('mobile'); setBootStage('source'); }}
-              className="glass p-10 rounded-[3rem] group hover:border-emerald-500/50 transition-all border border-white/5 active:scale-95"
-            >
-              <Smartphone className="w-16 h-16 mx-auto mb-6 text-slate-400 group-hover:text-emerald-400 transition-colors" />
-              <h3 className="text-2xl font-bold text-white mb-1 uppercase tracking-tight">Modo Mobile</h3>
-              <p className="text-sm text-slate-500 font-medium italic">Touch-first e navegação inferior</p>
-            </button>
-          </div>
-
-          <div className="pt-8 border-t border-white/5">
-             <p className="text-[11px] text-slate-600 font-bold uppercase tracking-[0.25em] leading-relaxed">
-               Gerado por Luiz Gustavo Andrade Santos<br/>
-               App feito 100% com IA<br/>
-               Todos os direitos reservados ao Google AI Studio
-             </p>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
   // Source Selector
   if (bootStage === 'source') {
     return (
@@ -1102,7 +1017,7 @@ export default function App() {
             <div className="w-20 h-20 bg-emerald-500/20 rounded-[2rem] mx-auto flex items-center justify-center">
               <FolderSync className="w-10 h-10 text-emerald-500" />
             </div>
-            <h2 className="text-3xl font-black text-white tracking-tighter uppercase leading-tight">Escolha sua Fonte de Dados</h2>
+            <h2 className="text-3xl font-black text-white tracking-tighter uppercase leading-tight">Como deseja prosseguir?</h2>
             <p className="text-slate-400 text-sm leading-relaxed">A sincronização mantém seus dados seguros e privados no seu dispositivo.</p>
           </div>
           
@@ -1130,9 +1045,13 @@ export default function App() {
              </div>
           </div>
           
-          <button onClick={() => setBootStage('selector')} className="text-[10px] font-black text-slate-500 hover:text-white transition-colors uppercase tracking-widest flex items-center justify-center gap-2 mx-auto">
-            <ArrowLeft className="w-3 h-3" /> Voltar ao Início
-          </button>
+          <div className="pt-4">
+            <p className="text-[10px] text-slate-600 font-bold uppercase tracking-[0.25em] leading-relaxed">
+               Gerado por Luiz Gustavo Andrade Santos<br/>
+               App feito 100% com IA<br/>
+               Todos os direitos reservados ao Google AI Studio
+             </p>
+          </div>
         </motion.div>
       </div>
     );
@@ -1166,10 +1085,10 @@ export default function App() {
                ACESSAR MEU PAINEL <ArrowRight className="w-5 h-5" />
              </button>
              <button 
-              onClick={() => setBootStage('selector')}
+              onClick={() => { clearState(dbInstance); setBootStage('source'); }}
               className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-slate-500 text-xs uppercase hover:bg-white/10 transition-all active:scale-95"
              >
-               TROCAR FONTE DE DADOS
+                TROCAR FONTE DE DADOS
              </button>
           </div>
         </motion.div>
@@ -1179,41 +1098,12 @@ export default function App() {
 
   // Main App
   return (
-    <div className={cn(
-      "h-screen w-screen overflow-hidden bg-slate-950 text-slate-200 flex select-none",
-      mode === 'mobile' ? "flex-col" : "flex-row"
-    )}>
+    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-200 flex flex-col select-none">
       <Toaster position="top-right" theme="dark" richColors />
 
-      {/* DESKTOP SIDEBAR */}
-      {mode === 'desktop' && (
-        <aside className="w-24 bg-slate-900 border-r border-white/5 flex flex-col items-center py-8 gap-10 z-20">
-          <div className="p-3 bg-emerald-500 rounded-2xl shadow-xl shadow-emerald-500/20">
-            <Leaf className="w-8 h-8 text-white" />
-          </div>
-          
-          <nav className="flex flex-col gap-6">
-            <NavItem icon={<LayoutDashboard />} label="Relatórios" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} />
-            <NavItem icon={<ReceiptText />} label="Lançamentos" active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')} />
-            <NavItem icon={<Bot />} label="IA" active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} />
-            <NavItem icon={<Tag />} label="Categorias" active={activeTab === 'categories'} onClick={() => setActiveTab('categories')} />
-            <NavItem icon={<Settings />} label="Ajustes" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
-            <NavItem icon={<Leaf />} label="Créditos" active={activeTab === 'about'} onClick={() => setActiveTab('about')} />
-          </nav>
-
-          <button 
-            onClick={() => setBootStage('selector')}
-            className="mt-auto p-4 text-slate-500 hover:text-white transition-colors"
-            title="Trocar Modo"
-          >
-            <LogOut className="w-6 h-6" />
-          </button>
-        </aside>
-      )}
-
       {/* CONTENT AREA */}
-      <main className="flex-1 overflow-y-auto custom-scrollbar flex flex-col pb-24 md:pb-0">
-        <header className="p-6 md:p-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-8">
+      <main className="flex-1 overflow-y-auto custom-scrollbar flex flex-col pb-24">
+        <header className="p-6 md:p-10 flex flex-col justify-between items-start gap-8">
           <div className="space-y-4">
             <h1 className="text-3xl font-black text-white tracking-tighter">VerdeGrana <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded font-mono uppercase">Pro</span></h1>
             <div className="flex flex-wrap items-center gap-2">
@@ -1379,24 +1269,7 @@ export default function App() {
                       )}
                     </Card>
 
-                    {/* ROW 2: FLUXO DE CAIXA */}
-                    <Card className="col-span-12 p-10 h-[450px] relative overflow-hidden">
-                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
-                      <div className="flex justify-between items-center mb-8">
-                        <h3 className="font-black text-lg uppercase tracking-tighter">Fluxo de Caixa</h3>
-                      </div>
-                     {isChartReady ? (
-                        <div className="w-full h-full relative">
-                          <TimelineChart data={tendenciaData} isPerformance={true} />
-                        </div>
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
-                        </div>
-                      )}
-                    </Card>
-
-                    {/* ROW 3: DETALHES (DYNAMIC) */}
+                    {/* ROW 2: DETALHES (DYNAMIC) */}
                     <AnimatePresence>
                       {selectedPeriod && (
                         <Card id="detalhes-periodo-container" className="col-span-12 p-8 border-emerald-500/20 bg-emerald-500/5">
@@ -1439,6 +1312,23 @@ export default function App() {
                         </Card>
                       )}
                     </AnimatePresence>
+
+                    {/* ROW 3: FLUXO DE CAIXA */}
+                    <Card className="col-span-12 p-10 h-[450px] relative overflow-hidden">
+                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[1px] bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+                      <div className="flex justify-between items-center mb-8">
+                        <h3 className="font-black text-lg uppercase tracking-tighter">Fluxo de Caixa</h3>
+                      </div>
+                     {isChartReady ? (
+                        <div className="w-full h-full relative">
+                          <TimelineChart data={tendenciaData} isPerformance={true} />
+                        </div>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <RefreshCw className="w-8 h-8 text-emerald-500/20 animate-spin" />
+                        </div>
+                      )}
+                    </Card>
 
                     {/* ROW 4: DISTRIBUIÇÃO GERAL */}
                     <Card className="col-span-12 p-10 relative overflow-hidden flex flex-col min-h-[500px]">
@@ -1906,7 +1796,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
       </footer>
 
       {/* MOBILE BOTTOM NAVBAR */}
-      {mode === 'mobile' && bootStage === 'ready' && (
+      {bootStage === 'ready' && (
         <nav className="fixed bottom-0 left-0 right-0 glass backdrop-blur-3xl border-t border-white/5 flex items-center justify-around py-4 pb-safe z-50">
           <MobileNavItem icon={<Home />} active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} />
           <MobileNavItem icon={<ReceiptText />} active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')} />
@@ -2051,9 +1941,9 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
           <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center p-0 md:p-6">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl" onClick={() => setIsAddModalOpen(false)} />
             <motion.div 
-              initial={mode === 'mobile' ? { y: 100 } : { scale: 0.9, opacity: 0 }}
-              animate={mode === 'mobile' ? { y: 0 } : { scale: 1, opacity: 1 }}
-              exit={mode === 'mobile' ? { y: 600 } : { scale: 0.9, opacity: 0 }}
+              initial={{ y: 100 }}
+              animate={{ y: 0 }}
+              exit={{ y: 600 }}
               className="relative w-full max-w-2xl bg-[#0f172a] md:glass p-8 rounded-t-[3rem] md:rounded-[3rem] border-t md:border border-white/10 shadow-2xl"
             >
               <div className="flex justify-between items-center mb-10">
@@ -2130,22 +2020,6 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
 }
 
 // --- Sub-Components ---
-
-function NavItem({ icon, active, onClick, label }: any) {
-  return (
-    <button 
-      onClick={onClick}
-      className={cn(
-        "p-4 rounded-2xl transition-all relative group",
-        active ? "bg-emerald-500 text-white shadow-xl shadow-emerald-500/20" : "text-slate-500 hover:text-emerald-400 hover:bg-white/5"
-      )}
-      title={label}
-    >
-      {icon}
-      {active && <motion.div layoutId="nav-glow" className="absolute -right-2 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-emerald-400 rounded-full" />}
-    </button>
-  );
-}
 
 function MobileNavItem({ icon, active, onClick }: any) {
   return (

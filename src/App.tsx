@@ -98,6 +98,9 @@ export default function App() {
   
   // Persistence Handles
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'synced' | 'saving' | 'error'>('idle');
+  const [isDirty, setIsDirty] = useState(false);
+  const [isFolderPermissionMissing, setIsFolderPermissionMissing] = useState(false);
 
   // UI States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -111,6 +114,14 @@ export default function App() {
 
   const readFromFile = async (handle: FileSystemDirectoryHandle) => {
     try {
+      // Use queryPermission to check if we can read
+      // @ts-ignore
+      const permission = await handle.queryPermission({ mode: 'readwrite' });
+      if (permission !== 'granted') {
+        setIsFolderPermissionMissing(true);
+        return false;
+      }
+
       const fileHandle = await handle.getFileHandle(FILE_NAME, { create: true });
       const file = await fileHandle.getFile();
       const text = await file.text();
@@ -119,21 +130,31 @@ export default function App() {
         if (data.transactions) setTransactions(data.transactions);
         if (data.categories) setCategories(data.categories);
       }
+      setIsFolderPermissionMissing(false);
+      setSyncStatus('synced');
       return true;
     } catch (e) {
       console.error(e);
+      setSyncStatus('error');
       return false;
     }
   };
 
   const writeToFile = async (handle: FileSystemDirectoryHandle, data: any) => {
     try {
+      setSyncStatus('saving');
       const fileHandle = await handle.getFileHandle(FILE_NAME, { create: true });
       const writable = await fileHandle.createWritable();
       await writable.write(JSON.stringify(data, null, 2));
       await writable.close();
+      setSyncStatus('synced');
+      setIsDirty(false);
+      // Small toast for auto-sync feedback if not too noisy
+      // toast.success('Backup sincronizado!', { duration: 1000 });
     } catch (e) {
       console.error('Falha ao gravar no arquivo:', e);
+      setSyncStatus('error');
+      setIsDirty(true); // Keep dirty to retry
     }
   };
 
@@ -149,10 +170,17 @@ export default function App() {
       if (savedState) {
         if (savedState.transactions) setTransactions(savedState.transactions);
         if (savedState.categories) setCategories(savedState.categories);
+        
         if (savedState.workspaceHandle) {
           setDirHandle(savedState.workspaceHandle);
-          // Try to re-grant permission if needed or just read
-          // Note: Browser might require a user gesture for re-activation
+          // Try to wake up handle
+          // @ts-ignore
+          const perm = await savedState.workspaceHandle.queryPermission({ mode: 'readwrite' });
+          if (perm === 'granted') {
+            await readFromFile(savedState.workspaceHandle);
+          } else {
+            setIsFolderPermissionMissing(true);
+          }
         }
 
         if (savedState.mode) {
@@ -168,37 +196,60 @@ export default function App() {
     boot();
   }, []);
 
-  // Sync state to IDB & File System
+  // Sync state to IDB (Instant)
   useEffect(() => {
-    const sync = async () => {
-      if (dbInstance && bootStage === 'ready') {
-        const stateToSave = { transactions, categories, mode, workspaceHandle: dirHandle || undefined };
-        await saveState(dbInstance, stateToSave);
-        
-        if (dirHandle) {
-          // Check if we still have permission
-          // @ts-ignore
-          const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
-          if (permission === 'granted') {
-            await writeToFile(dirHandle, { transactions, categories });
-          }
-        }
-      }
-    };
-    sync();
+    if (dbInstance && bootStage === 'ready') {
+      const stateToSave = { transactions, categories, mode, workspaceHandle: dirHandle || undefined };
+      saveState(dbInstance, stateToSave);
+      setIsDirty(true);
+    }
   }, [transactions, categories, mode, dirHandle, bootStage]);
 
+  // Debounced File System Sync
+  useEffect(() => {
+    if (!dirHandle || !isDirty || bootStage !== 'ready' || isFolderPermissionMissing) return;
+
+    const timeout = setTimeout(async () => {
+      // @ts-ignore
+      const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
+      if (permission === 'granted') {
+        await writeToFile(dirHandle, { transactions, categories });
+      } else {
+        setIsFolderPermissionMissing(true);
+      }
+    }, 1000); // 1s debounce to avoid thrashing
+
+    return () => clearTimeout(timeout);
+  }, [transactions, categories, dirHandle, isDirty, bootStage, isFolderPermissionMissing]);
+
   // --- Handlers ---
+  const handleRequestFolderPermission = async () => {
+    if (!dirHandle) return;
+    try {
+      // @ts-ignore
+      const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
+      if (permission === 'granted') {
+        setIsFolderPermissionMissing(false);
+        await readFromFile(dirHandle);
+        toast.success('Sincronização restaurada!');
+      }
+    } catch (e) {
+      toast.error('Não foi possível obter permissão da pasta.');
+    }
+  };
+
   const handleSelectDirectory = async () => {
     try {
       // @ts-ignore
       const handle = await window.showDirectoryPicker();
       setDirHandle(handle);
-      await readFromFile(handle);
-      setBootStage('ready');
-      toast.success('Pasta de dados sincronizada!');
+      const success = await readFromFile(handle);
+      if (success) {
+        setBootStage('ready');
+        toast.success('Pasta de dados sincronizada!');
+      }
     } catch (e) {
-      toast.error('Permissão negada ou erro ao selecionar pasta.');
+      toast.error('Erro ao selecionar pasta.');
     }
   };
 
@@ -482,8 +533,13 @@ export default function App() {
                 ))}
               </select>
               {dirHandle && (
-                <div className="flex items-center gap-1 text-[10px] text-emerald-500/60 font-bold ml-2 animate-pulse">
-                  <RefreshCw className="w-3 h-3" /> SYNC ON
+                <div className={cn(
+                  "flex items-center gap-1 text-[10px] font-bold ml-2 transition-all",
+                  syncStatus === 'saving' ? "text-amber-500 animate-pulse" : 
+                  syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
+                )}>
+                  {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FolderSync className="w-3 h-3" />}
+                  {syncStatus === 'saving' ? 'SALVANDO...' : 'SINCRONIZADO'}
                 </div>
               )}
             </div>
@@ -789,7 +845,48 @@ Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "
         </nav>
       )}
 
-      {/* ADD/EDIT MODAL */}
+      {/* FOLDER PERMISSION OVERLAY */}
+      <AnimatePresence>
+        {isFolderPermissionMissing && bootStage === 'ready' && (
+          <motion.div 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: 1 }} 
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-6"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="glass max-w-sm w-full p-10 rounded-[3.5rem] text-center space-y-8 border border-emerald-500/30 shadow-2xl relative overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500 animate-pulse" />
+              <div className="w-20 h-20 bg-emerald-500/20 rounded-3xl mx-auto flex items-center justify-center">
+                <FolderSync className="w-10 h-10 text-emerald-500" />
+              </div>
+              <div className="space-y-3">
+                <h3 className="text-2xl font-black text-white tracking-tighter">Bem-vindo de volta!</h3>
+                <p className="text-slate-400 text-sm leading-relaxed">Sua pasta de dados local foi detectada. Clique abaixo para reativar a sincronização automática e carregar seus dados.</p>
+              </div>
+              <div className="space-y-3 pt-4">
+                <button 
+                  onClick={handleRequestFolderPermission}
+                  className="w-full py-5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold transition-all shadow-xl shadow-emerald-500/20 active:scale-95 flex items-center justify-center gap-3"
+                >
+                  <RefreshCw className="w-5 h-5" /> Sincronizar Diretório
+                </button>
+                <button 
+                  onClick={() => setIsFolderPermissionMissing(false)}
+                  className="w-full py-4 text-slate-500 text-xs font-bold hover:text-slate-300 transition-colors"
+                >
+                  Continuar sem sincronização
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* DASHBOARD MODAL/OVERLAY ON BOOT IF DESIRED */}
       <AnimatePresence>
         {isAddModalOpen && (
           <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center p-0 md:p-6">

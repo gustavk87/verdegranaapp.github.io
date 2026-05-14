@@ -724,7 +724,7 @@ export default function App() {
   // --- Persistence Logic (File System) ---
   const FILE_NAME = 'verdegrana_db.json';
 
-  const readFromFile = async (handle: FileSystemDirectoryHandle, firstTime = false) => {
+  const readFromFile = async (handle: FileSystemDirectoryHandle) => {
     try {
       // @ts-ignore
       const permission = await handle.queryPermission({ mode: 'readwrite' });
@@ -733,11 +733,12 @@ export default function App() {
         return false;
       }
 
-      let fileHandle;
       try {
-        fileHandle = await handle.getFileHandle(FILE_NAME, { create: false });
+        // SUCCESS PATH: File Exists
+        const fileHandle = await handle.getFileHandle(FILE_NAME, { create: false });
         const file = await fileHandle.getFile();
         const text = await file.text();
+        
         if (text) {
           const data = JSON.parse(text);
           
@@ -761,21 +762,27 @@ export default function App() {
           
           setCategories(discoveredCategories);
         }
-        toast.success(firstTime ? 'Arquivo de dados carregado!' : 'Sincronização restaurada!');
+        toast.success('BEM-VINDO DE VOLTA!');
       } catch (e) {
-        // File doesn't exist, create it
-        await writeToFile(handle, { 
+        // FAILSAFE PATH: File Missing / Empty Folder
+        console.warn("Base de dados não encontrada, criando nova estrutura...");
+        const skeleton = { 
           transactions: [], 
           categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })) 
-        });
-        toast.success(`Bem-vindo ao VerdeGrana! Criamos seu arquivo de dados com sucesso.`);
+        };
+        await writeToFile(handle, skeleton);
+        setTransactions([]);
+        setCategories(skeleton.categories);
+        toast.success(`SEJA BEM-VINDO! Nova base de dados configurada.`);
       }
       
       setIsFolderPermissionMissing(false);
       setSyncStatus('synced');
+      // CRITICAL: Force transition to Dash
+      setBootStage('ready');
       return true;
     } catch (e) {
-      console.error(e);
+      console.error("ERRO CRÍTICO NA SINCRONIZAÇÃO:", e);
       setSyncStatus('error');
       return false;
     }
@@ -853,12 +860,13 @@ export default function App() {
       const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
         setIsFolderPermissionMissing(false);
-        const success = await readFromFile(dirHandle);
-        if (success) {
-          setBootStage('ready');
-        }
+        // readFromFile now handles the state transition to 'ready'
+        await readFromFile(dirHandle);
+      } else {
+        toast.error('Permissão negada para acessar a pasta.');
       }
     } catch (e) {
+      console.error(e);
       toast.error('Não foi possível obter permissão da pasta.');
     }
   };

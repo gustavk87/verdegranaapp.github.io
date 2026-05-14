@@ -189,68 +189,116 @@ const CategoryDonut = ({ data, colorMode }: {
   return <Doughnut data={chartData} options={options} />;
 };
 
-const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: any[], type?: 'bar' | 'area', isPerformance?: boolean, onPointClick?: (date: string) => void }) => {
+const TimelineChart = ({ data, isPerformance = false, onPointClick, viewMode = 'tudo' }: { data: any[], type?: 'bar' | 'area', isPerformance?: boolean, onPointClick?: (date: string) => void, viewMode?: string }) => {
   const chartRef = useRef<any>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [activeData, setActiveData] = useState<{income: number, expense: number, net: number, cumulative?: number, date?: string} | null>(null);
 
   const handleReset = () => {
     chartRef.current?.resetZoom();
+    setActiveIndex(null);
+    setActiveData(null);
   };
 
-  const maxVal = useMemo(() => Math.max(...data.flatMap(d => [d.income, d.expense]), 100), [data]);
-  
-  const chartData = useMemo(() => ({
-    labels: data.map(d => d.name),
-    datasets: [
-      {
-        label: 'Receitas (Base)',
-        data: data.map(d => d.income),
-        backgroundColor: 'rgba(16, 185, 129, 0.8)',
-        borderColor: 'rgba(16, 185, 129, 1)',
-        borderWidth: 1,
-        borderRadius: 4,
-        barPercentage: 0.8,
-        categoryPercentage: 0.8,
-        grouped: false,
-        order: 2,
-      },
-      {
-        label: 'Despesas (Base)',
-        data: data.map(d => d.expense),
-        backgroundColor: 'rgba(244, 63, 94, 0.8)',
-        borderColor: 'rgba(244, 63, 94, 1)',
-        borderWidth: 1,
-        borderRadius: 4,
-        barPercentage: 0.8,
-        categoryPercentage: 0.8,
-        grouped: false,
-        order: 2,
-      },
-      {
-        label: 'Receitas (Top)',
-        data: data.map(d => d.income < d.expense ? d.income : 0),
-        backgroundColor: 'rgba(16, 185, 129, 1)',
-        borderColor: 'rgba(16, 185, 129, 1)',
-        borderWidth: 1,
-        borderRadius: 4,
-        barPercentage: 0.8,
-        categoryPercentage: 0.8,
-        grouped: false,
-        order: 1,
-      },
-      {
-        label: 'Despesas (Top)',
-        data: data.map(d => d.expense < d.income ? d.expense : 0),
-        backgroundColor: 'rgba(244, 63, 94, 1)',
-        borderColor: 'rgba(244, 63, 94, 1)',
-        borderWidth: 1,
-        borderRadius: 4,
-        barPercentage: 0.8,
-        categoryPercentage: 0.8,
-        grouped: false,
-        order: 1,
+  const cumulativeData = useMemo(() => {
+    if (!isPerformance) return [];
+    let runningSum = 0;
+    return data.map(d => {
+      let val = 0;
+      if (viewMode === 'tudo' || viewMode === 'personalizado') {
+        val = d.income - d.expense;
+      } else if (viewMode === 'receitas') {
+        val = d.income;
+      } else if (viewMode === 'despesas') {
+        val = d.expense;
       }
-    ]
-  }), [data]);
+      runningSum += val;
+      return runningSum;
+    });
+  }, [data, isPerformance, viewMode]);
+
+  const maxVal = useMemo(() => {
+    if (isPerformance) {
+        if (cumulativeData.length === 0) return 100;
+        return Math.max(...cumulativeData.map(Math.abs), 100);
+    }
+    return Math.max(...data.flatMap(d => [d.income, d.expense]), 100);
+  }, [data, isPerformance, cumulativeData]);
+  
+  const chartData = useMemo(() => {
+    if (isPerformance) {
+      const color = (viewMode === 'despesas') ? '#ef4444' : '#10b981';
+      return {
+        labels: data.map(d => d.name),
+        datasets: [{
+          label: 'Acumulado',
+          data: cumulativeData,
+          fill: true,
+          tension: 0.4,
+          borderColor: color,
+          backgroundColor: `${color}33`,
+          pointRadius: data.map((_, i) => i === activeIndex ? 6 : 0),
+          pointBackgroundColor: data.map((_, i) => i === activeIndex ? '#ffffff' : color),
+          pointHoverRadius: 8,
+          pointHitRadius: 15,
+        }]
+      };
+    }
+
+    return {
+      labels: data.map(d => d.name),
+      datasets: [
+        {
+          label: 'Receitas (Base)',
+          data: data.map(d => d.income),
+          backgroundColor: 'rgba(16, 185, 129, 0.8)',
+          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+          borderRadius: 4,
+          barPercentage: 0.8,
+          categoryPercentage: 0.8,
+          grouped: false,
+          order: 2,
+        },
+        {
+          label: 'Despesas (Base)',
+          data: data.map(d => d.expense),
+          backgroundColor: 'rgba(244, 63, 94, 0.8)',
+          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+          borderRadius: 4,
+          barPercentage: 0.8,
+          categoryPercentage: 0.8,
+          grouped: false,
+          order: 2,
+        },
+        {
+          label: 'Receitas (Top)',
+          data: data.map(d => d.income < d.expense ? d.income : 0),
+          backgroundColor: 'rgba(16, 185, 129, 1)',
+          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+          borderRadius: 4,
+          barPercentage: 0.8,
+          categoryPercentage: 0.8,
+          grouped: false,
+          order: 1,
+        },
+        {
+          label: 'Despesas (Top)',
+          data: data.map(d => d.expense < d.income ? d.expense : 0),
+          backgroundColor: 'rgba(244, 63, 94, 1)',
+          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+          borderRadius: 4,
+          barPercentage: 0.8,
+          categoryPercentage: 0.8,
+          grouped: false,
+          order: 1,
+        }
+      ]
+    };
+  }, [data, activeIndex, isPerformance, cumulativeData, viewMode]);
 
   const options = useMemo(() => ({
     responsive: true,
@@ -260,10 +308,51 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
       padding: { bottom: 25 }
     },
     onClick: (e: any, elements: any) => {
-      if (elements.length > 0 && onPointClick) {
+      const chart = chartRef.current;
+      if (!chart) return;
+
+      if (elements.length > 0) {
         const index = elements[0].index;
-        onPointClick(data[index].fullDate);
+        setActiveIndex(index);
+        const item = data[index];
+        
+        if (isPerformance) {
+           setActiveData({
+             income: item.income,
+             expense: item.expense,
+             net: item.income - item.expense,
+             cumulative: cumulativeData[index],
+             date: new Date(item.fullDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+           });
+
+           chart.data.datasets[0].pointRadius = data.map((_, i) => i === index ? 6 : 0);
+           const color = (viewMode === 'despesas') ? '#ef4444' : '#10b981';
+           chart.data.datasets[0].pointBackgroundColor = data.map((_, i) => i === index ? '#ffffff' : color);
+        } else {
+          setActiveData({
+            income: item.income,
+            expense: item.expense,
+            net: item.income - item.expense
+          });
+          if (onPointClick) onPointClick(data[index].fullDate);
+          
+          chart.data.datasets.forEach((dataset: any) => {
+            dataset.borderColor = data.map((_, i) => i === index ? '#ffffff' : 'transparent');
+            dataset.borderWidth = data.map((_, i) => i === index ? 3 : 0);
+          });
+        }
+      } else {
+        setActiveIndex(null);
+        setActiveData(null);
+        if (isPerformance) {
+          chart.data.datasets[0].pointRadius = 0;
+        } else {
+          chart.data.datasets.forEach((dataset: any) => {
+            dataset.borderWidth = 0;
+          });
+        }
       }
+      chart.update('none');
     },
     interaction: {
       mode: 'index' as const,
@@ -272,27 +361,7 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: 'rgba(15, 23, 42, 0.95)',
-        padding: 16,
-        cornerRadius: 16,
-        bodyFont: { size: 12, weight: 'bold' as const },
-        borderColor: 'rgba(255, 255, 255, 0.1)',
-        borderWidth: 1,
-        displayColors: false,
-        callbacks: {
-           title: () => '',
-           label: () => '', 
-           beforeBody: (context: any) => {
-             const index = context[0].dataIndex;
-             const item = data[index];
-             const net = item.income - item.expense;
-             return [
-               `Receitas: ${formatCurrency(item.income)}`,
-               `Despesas: ${formatCurrency(item.expense)}`,
-               `Líquido: ${formatCurrency(net)}`
-             ];
-           }
-        }
+        enabled: false,
       },
       zoom: {
         pan: {
@@ -352,7 +421,7 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
       },
       y: { 
         stacked: false,
-        min: 0,
+        min: isPerformance ? undefined : 0,
         max: maxVal * 1.2,
         grid: { color: 'rgba(255,255,255,0.03)' }, 
         ticks: { 
@@ -362,25 +431,51 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
         } 
       }
     }
-  }), [data, onPointClick, maxVal]);
-
-  const finalData = useMemo(() => {
-    if (!isPerformance) return chartData;
-    return {
-      ...chartData,
-      datasets: chartData.datasets.map(ds => ({
-        ...ds,
-        fill: true,
-        tension: 0.4,
-        pointRadius: 4,
-        pointHoverRadius: 6,
-        backgroundColor: ds.label === 'Receitas' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(244, 63, 94, 0.1)',
-      }))
-    };
-  }, [chartData, isPerformance]);
+  }), [data, onPointClick, maxVal, isPerformance, cumulativeData, viewMode]);
 
   return (
     <div className="w-full h-full relative group flex flex-col">
+      {activeData && !isPerformance && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-wrap justify-between items-center text-[10px] p-3 bg-slate-900/80 backdrop-blur-md rounded-xl mb-4 border border-white/5 shadow-2xl gap-3"
+        >
+           <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-slate-400 font-black uppercase tracking-widest">Receitas:</span>
+              <span className="text-emerald-400 font-black">{formatCurrency(activeData.income)}</span>
+           </div>
+           <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-rose-500" />
+              <span className="text-slate-400 font-black uppercase tracking-widest">Despesas:</span>
+              <span className="text-rose-400 font-black">{formatCurrency(activeData.expense)}</span>
+           </div>
+           <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-slate-400" />
+              <span className="text-slate-400 font-black uppercase tracking-widest">Líquido:</span>
+              <span className={cn("font-black", activeData.net >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                {formatCurrency(activeData.net)}
+              </span>
+           </div>
+        </motion.div>
+      )}
+
+      {activeData && isPerformance && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-wrap justify-between items-center text-[10px] p-3 bg-slate-900/80 backdrop-blur-md rounded-xl mb-4 border border-white/5 shadow-2xl gap-3"
+        >
+           <div className="flex items-center gap-2">
+              <span className="text-slate-400 font-black uppercase tracking-widest">Acumulado até {activeData.date}:</span>
+              <span className={cn("font-black text-xs", (activeData.cumulative || 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                {formatCurrency(activeData.cumulative || 0)}
+              </span>
+           </div>
+        </motion.div>
+      )}
+
       <div className="flex justify-end items-center gap-2 mb-2">
          <div className="flex bg-slate-900/60 backdrop-blur-xl p-1 rounded-xl border border-white/10">
             <button 
@@ -398,11 +493,11 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick }: { data: an
           {isPerformance ? (
              <ChartLine 
                ref={chartRef} 
-               data={finalData} 
+               data={chartData} 
                options={options} 
              />
           ) : (
-            <ChartBar ref={chartRef} data={finalData} options={options} />
+            <ChartBar ref={chartRef} data={chartData} options={options} />
           )}
         </div>
       </div>
@@ -549,6 +644,7 @@ export default function App() {
   
   // Edge-Swipe Logic
   const touchStart = useRef<{ x: number, y: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [edgeSwipe, setEdgeSwipe] = useState<{
     side: 'left' | 'right' | null;
     distance: number;
@@ -979,6 +1075,20 @@ export default function App() {
     });
   }, [transactions, dateFilter, viewMode]);
 
+
+  const filteredTransactions = useMemo(() => {
+    return currentTransactions.filter(t => {
+      const matchSearch = t.desc.toLowerCase().includes(searchTerm.toLowerCase()) || t.category.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchCat = categoryFilters.length === 0 || categoryFilters.includes(t.category);
+      return matchSearch && matchCat;
+    }).sort((a, b) => {
+      if (sortConfig === 'date') return new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (sortConfig === 'value-asc') return a.value - b.value;
+      if (sortConfig === 'value-desc') return b.value - a.value;
+      return 0;
+    });
+  }, [currentTransactions, searchTerm, categoryFilters, sortConfig]);
+
   const stats = useMemo(() => {
     const income = currentTransactions.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
     const expenses = currentTransactions.filter(t => t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
@@ -990,9 +1100,9 @@ export default function App() {
   }, [currentTransactions]);
 
   const fluxoData = useMemo(() => {
-    if (transactions.length === 0) return [];
+    if (filteredTransactions.length === 0) return [];
 
-    const dates = transactions.map(t => new Date(t.date).getTime());
+    const dates = filteredTransactions.map(t => new Date(t.date).getTime());
     const minD = new Date(Math.min(...dates));
     const maxD = new Date(Math.max(...dates));
 
@@ -1000,15 +1110,16 @@ export default function App() {
     
     if (analyticsConfig.granularity === 'day') {
       const start = new Date(minD);
-      start.setDate(start.getDate() - 10);
+      start.setDate(start.getDate() - 2);
       const end = new Date(maxD);
-      end.setDate(end.getDate() + 10);
+      end.setDate(end.getDate() + 2);
 
       let curr = new Date(start);
       while (curr <= end) {
         const dStr = curr.toISOString().split('T')[0];
-        const income = transactions.filter(t => t.type === 'entrada' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
-        const expense = transactions.filter(t => t.type === 'saída' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
+        const dayTxs = filteredTransactions.filter(t => t.date === dStr);
+        const income = dayTxs.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
+        const expense = dayTxs.filter(t => t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
         
         results.push({ 
             name: curr.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }), 
@@ -1019,7 +1130,6 @@ export default function App() {
         curr.setDate(curr.getDate() + 1);
       }
     } else {
-      // Just normal monthly/yearly without specific day padding logic mentioned
       const start = analyticsConfig.granularity === 'month' ? new Date(minD.getFullYear(), minD.getMonth(), 1) : new Date(minD.getFullYear(), 0, 1);
       const end = analyticsConfig.granularity === 'month' ? new Date(maxD.getFullYear(), maxD.getMonth(), 1) : new Date(maxD.getFullYear(), 0, 1);
 
@@ -1033,20 +1143,19 @@ export default function App() {
         if (analyticsConfig.granularity === 'month') {
           const m = curr.getMonth();
           const y = curr.getFullYear();
-          income = transactions.filter(t => {
+          const pTxs = filteredTransactions.filter(t => {
             const d = new Date(t.date);
-            return t.type === 'entrada' && d.getMonth() === m && d.getFullYear() === y;
-          }).reduce((acc, t) => acc + t.value, 0);
-          expense = transactions.filter(t => {
-            const d = new Date(t.date);
-            return t.type === 'saída' && d.getMonth() === m && d.getFullYear() === y;
-          }).reduce((acc, t) => acc + t.value, 0);
+            return d.getMonth() === m && d.getFullYear() === y;
+          });
+          income = pTxs.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
+          expense = pTxs.filter(t => t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
           name = curr.toLocaleString('pt-BR', { month: 'short' });
           curr.setMonth(curr.getMonth() + 1);
         } else {
           const y = curr.getFullYear();
-          income = transactions.filter(t => t.type === 'entrada' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
-          expense = transactions.filter(t => t.type === 'saída' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
+          const pTxs = filteredTransactions.filter(t => new Date(t.date).getFullYear() === y);
+          income = pTxs.filter(t => t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
+          expense = pTxs.filter(t => t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
           name = y.toString();
           curr.setFullYear(curr.getFullYear() + 1);
         }
@@ -1054,72 +1163,11 @@ export default function App() {
       }
     }
     return results;
-  }, [transactions, analyticsConfig.granularity]);
+  }, [filteredTransactions, analyticsConfig.granularity]);
 
   const tendenciaData = useMemo(() => {
-    if (transactions.length === 0) return [];
-
-    const dates = transactions.map(t => new Date(t.date).getTime());
-    const minD = new Date(Math.min(...dates));
-    const maxD = new Date(Math.max(...dates));
-
-    const results = [];
-    
-    if (analyticsConfig.granularity === 'day') {
-      const start = new Date(minD);
-      const end = new Date(maxD);
-
-      let curr = new Date(start);
-      while (curr <= end) {
-        const dStr = curr.toISOString().split('T')[0];
-        const income = transactions.filter(t => t.type === 'entrada' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
-        const expense = transactions.filter(t => t.type === 'saída' && t.date === dStr).reduce((acc, t) => acc + t.value, 0);
-        
-        results.push({ 
-            name: curr.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }), 
-            fullDate: curr.toISOString(),
-            income, 
-            expense 
-        });
-        curr.setDate(curr.getDate() + 1);
-      }
-    } else {
-      // Logic without padding
-      const start = analyticsConfig.granularity === 'month' ? new Date(minD.getFullYear(), minD.getMonth(), 1) : new Date(minD.getFullYear(), 0, 1);
-      const end = analyticsConfig.granularity === 'month' ? new Date(maxD.getFullYear(), maxD.getMonth(), 1) : new Date(maxD.getFullYear(), 0, 1);
-
-      let curr = new Date(start);
-      while (curr <= end) {
-        let income = 0;
-        let expense = 0;
-        let name = '';
-        let fullDate = curr.toISOString();
-
-        if (analyticsConfig.granularity === 'month') {
-          const m = curr.getMonth();
-          const y = curr.getFullYear();
-          income = transactions.filter(t => {
-            const d = new Date(t.date);
-            return t.type === 'entrada' && d.getMonth() === m && d.getFullYear() === y;
-          }).reduce((acc, t) => acc + t.value, 0);
-          expense = transactions.filter(t => {
-            const d = new Date(t.date);
-            return t.type === 'saída' && d.getMonth() === m && d.getFullYear() === y;
-          }).reduce((acc, t) => acc + t.value, 0);
-          name = curr.toLocaleString('pt-BR', { month: 'short' });
-          curr.setMonth(curr.getMonth() + 1);
-        } else {
-          const y = curr.getFullYear();
-          income = transactions.filter(t => t.type === 'entrada' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
-          expense = transactions.filter(t => t.type === 'saída' && new Date(t.date).getFullYear() === y).reduce((acc, t) => acc + t.value, 0);
-          name = y.toString();
-          curr.setFullYear(curr.getFullYear() + 1);
-        }
-        results.push({ name, fullDate, income, expense });
-      }
-    }
-    return results;
-  }, [transactions, analyticsConfig.granularity]);
+    return fluxoData; // Use same filtered data for both charts to ensure consistency
+  }, [fluxoData]);
 
   const categoryData = useMemo(() => {
     const expByCat: Record<string, number> = {};
@@ -1146,19 +1194,6 @@ export default function App() {
         value: donutViewMode === 'receitas' ? (incByCat[name] || 0) : (donutViewMode === 'despesas' ? (expByCat[name] || 0) : (incByCat[name] || 0) + (expByCat[name] || 0))
       }));
   }, [currentTransactions, donutViewMode]);
-
-  const filteredTransactions = useMemo(() => {
-    return currentTransactions.filter(t => {
-      const matchSearch = t.desc.toLowerCase().includes(searchTerm.toLowerCase()) || t.category.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchCat = categoryFilters.length === 0 || categoryFilters.includes(t.category);
-      return matchSearch && matchCat;
-    }).sort((a, b) => {
-      if (sortConfig === 'date') return new Date(b.date).getTime() - new Date(a.date).getTime();
-      if (sortConfig === 'value-asc') return a.value - b.value;
-      if (sortConfig === 'value-desc') return b.value - a.value;
-      return 0;
-    });
-  }, [currentTransactions, searchTerm, categoryFilters, sortConfig]);
 
   const periodDetailsTransactions = useMemo(() => {
     if (!selectedPeriod) return [];
@@ -1362,7 +1397,7 @@ export default function App() {
 
       {/* CONTENT AREA */}
       <main 
-        className="flex-1 overflow-y-auto custom-scrollbar flex flex-col pb-44 px-4 touch-pan-y"
+        className="flex-1 overflow-y-auto custom-scrollbar flex flex-col pb-56 px-4 touch-pan-y box-border max-w-full"
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
@@ -1581,6 +1616,7 @@ export default function App() {
                            <TimelineChart 
                               data={fluxoData} 
                               onPointClick={handlePointClick}
+                              viewMode={viewMode}
                            />
                         </div>
                       ) : (
@@ -1593,15 +1629,15 @@ export default function App() {
           {/* ROW 2: DETALHES (DYNAMIC) */}
           <AnimatePresence>
             {selectedPeriod && (
-              <Card id="detalhes-periodo-container" className="col-span-12 p-8 border-emerald-500/20 bg-emerald-500/5">
-                <div className="flex justify-between items-center mb-6">
-                  <div>
-                     <h3 className="font-black text-xl text-white uppercase tracking-tighter">Detalhes do Dia</h3>
-                     <p className="text-emerald-500 text-xs font-bold font-mono">{new Date(selectedPeriod).toLocaleDateString('pt-BR', { dateStyle: 'full' })}</p>
+              <Card id="detalhes-periodo-container" className="col-span-12 p-8 border-emerald-500/20 bg-emerald-500/5 box-border overflow-hidden max-w-full">
+                <div className="flex justify-between items-center mb-6 gap-4">
+                  <div className="min-w-0">
+                     <h3 className="font-black text-xl text-white uppercase tracking-tighter truncate">Detalhes do Dia</h3>
+                     <p className="text-emerald-500 text-xs font-bold font-mono break-words whitespace-normal leading-tight">{new Date(selectedPeriod).toLocaleDateString('pt-BR', { dateStyle: 'full' })}</p>
                   </div>
                   <button 
                     onClick={() => setSelectedPeriod(null)}
-                    className="p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors text-slate-400 hover:text-white"
+                    className="p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors text-slate-400 hover:text-white flex-shrink-0"
                   >
                     <X className="w-5 h-5" />
                   </button>
@@ -1609,25 +1645,25 @@ export default function App() {
 
                 <div className="space-y-3">
                   {periodDetailsTransactions.map(t => (
-                    <div key={t.id} className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-emerald-500/30 transition-all">
-                      <div className="flex items-center gap-4">
-                        <div className={cn("p-3 rounded-xl", t.type === 'entrada' ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500")}>
+                    <div key={t.id} className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-emerald-500/30 transition-all gap-2 min-w-0">
+                      <div className="flex items-center gap-4 min-w-0">
+                        <div className={cn("p-3 rounded-xl flex-shrink-0", t.type === 'entrada' ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500")}>
                           {t.type === 'entrada' ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
                         </div>
-                        <div>
-                          <p className="font-bold text-white">{t.desc}</p>
-                          <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">{t.category}</p>
+                        <div className="min-w-0">
+                          <p className="font-bold text-white truncate text-sm">{t.desc}</p>
+                          <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest truncate">{t.category}</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-3 flex-shrink-0">
                         <div className="text-right">
-                          <p className={cn("font-black", t.type === 'entrada' ? "text-emerald-400" : "text-rose-400")}>
+                          <p className={cn("font-black text-sm", t.type === 'entrada' ? "text-emerald-400" : "text-rose-400")}>
                             {t.type === 'entrada' ? '+' : '-'} {formatCurrency(t.value)}
                           </p>
                         </div>
                         <button 
                           onClick={() => { setEditingTransaction(t); setIsAddModalOpen(true); }}
-                          className="p-2.5 bg-white/5 rounded-xl text-slate-400 hover:text-white transition-colors"
+                          className="p-2 bg-white/5 rounded-xl text-slate-400 hover:text-white transition-colors"
                         >
                           <Edit3 className="w-4 h-4" />
                         </button>
@@ -1663,7 +1699,11 @@ export default function App() {
                       </div>
                      {isChartReady ? (
                         <div className="w-full h-full relative">
-                          <TimelineChart data={tendenciaData} isPerformance={true} />
+                          <TimelineChart 
+                             data={tendenciaData} 
+                             isPerformance={true} 
+                             viewMode={viewMode}
+                          />
                         </div>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
@@ -1719,8 +1759,8 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/5">
-                    <div className="flex bg-slate-900 rounded-xl p-1">
+                  <div className="w-full flex flex-wrap items-center justify-between gap-2 p-4 bg-white/5 rounded-2xl border border-white/5 box-border">
+                    <div className="flex flex-wrap gap-2 bg-slate-900 rounded-xl p-1">
                       {(['date', 'value-desc', 'value-asc'] as const).map((mode) => (
                          <button 
                           key={mode}
@@ -1734,9 +1774,9 @@ export default function App() {
                          </button>
                       ))}
                     </div>
-                    <div className="flex gap-2">
-                       <button onClick={undo} disabled={historyPointer <= 0} className="p-3 bg-white/5 rounded-xl text-slate-400 disabled:opacity-20 transition-all"><Undo2 className="w-5 h-5" /></button>
-                       <button onClick={redo} disabled={historyPointer >= history.length - 1} className="p-3 bg-white/5 rounded-xl text-slate-400 disabled:opacity-20 transition-all"><Redo2 className="w-5 h-5" /></button>
+                    <div className="flex items-center gap-3">
+                       <button onClick={undo} disabled={historyPointer <= 0} className="p-3 bg-white/5 rounded-xl text-slate-400 disabled:opacity-20 transition-all active:scale-95"><Undo2 className="w-5 h-5" /></button>
+                       <button onClick={redo} disabled={historyPointer >= history.length - 1} className="p-3 bg-white/5 rounded-xl text-slate-400 disabled:opacity-20 transition-all active:scale-95"><Redo2 className="w-5 h-5" /></button>
                     </div>
                   </div>
 
@@ -1859,7 +1899,7 @@ export default function App() {
                   <div className="space-y-4">
                     <h2 className="text-3xl font-black text-white">Assistente Mestre</h2>
                     <p className="text-slate-400 text-sm leading-relaxed max-w-sm">
-                      Registre seus gastos em segundos! Copie o prompt mestre abaixo e envie para sua IA de preferência. Após a confirmação dela, basta ditar seus gastos livremente. O resultado formatado deve ser colado no nosso Importador Inteligente ao lado.
+                      Transforme áudios ou textos em finanças organizadas! 1️⃣ Copie o Prompt Mestre. 2️⃣ Cole no seu ChatGPT, Gemini ou Claude. 3️⃣ Dite seus gastos. 4️⃣ Copie a resposta gerada e cole no nosso Importador Inteligente logo abaixo. (Dica: Se a lista for muito gigante, peça para a IA gerar um arquivo .txt ou .json e use o botão de importar arquivo).
                     </p>
                   </div>
                   <div className="w-full space-y-3">
@@ -1884,36 +1924,6 @@ Schema: [{"date": "YYYY-MM-DD", "desc": "string", "value": number, "category": "
                       className="w-full py-5 bg-emerald-600 rounded-3xl font-bold hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-600/30 flex items-center justify-center gap-3"
                     >
                       <Copy className="w-5 h-5" /> Copiar Master Prompt
-                    </button>
-                    
-                    <button 
-                      onClick={() => {
-                        const topCats = categoryData.slice(0, 5).map(c => `${c.name}: ${formatCurrency(c.value)}`).join(', ');
-                        const reportPrompt = `Relatório Financeiro VerdeGrana - Saúde Financeira Master
-                        
-Idealizador: Luiz Gustavo Andrade Santos
-Data do Relatório: ${new Date().toLocaleDateString('pt-BR')}
-
-RESUMO DO PERÍODO:
-- Saldo Atual: ${formatCurrency(stats.total)}
-- Total Receitas: ${formatCurrency(stats.income)}
-- Total Despesas: ${formatCurrency(stats.expenses)}
-- Fluxo Líquido: ${formatCurrency(stats.total)}
-
-TOP CATEGORIAS DE GASTO:
-${topCats || 'Sem dados suficientes'}
-
-MÉTRICAS:
-- Total Transactions: ${transactions.length}
-- Média por Transação: ${formatCurrency(stats.expenses / (transactions.filter(t => t.type === 'saída').length || 1))}
-
-SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomendações de investimentos baseados nestes dados.`;
-                        navigator.clipboard.writeText(reportPrompt);
-                        toast.success('Relatório para IA copiado!');
-                      }}
-                      className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-3"
-                    >
-                      <Share2 className="w-5 h-5 text-emerald-400" /> Exportar Dados para Saúde Financeira
                     </button>
                   </div>
                 </Card>
@@ -1946,6 +1956,107 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                   >
                     {isAiProcessing ? 'Processando...' : 'Processar Agora'}
                   </button>
+
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        try {
+                          const text = event.target?.result as string;
+                          const data = JSON.parse(text);
+                          processImport(Array.isArray(data) ? data : data.transactions || []);
+                          setActiveTab('reports');
+                          toast.success('Dados importados com sucesso!');
+                        } catch (err) {
+                          toast.error('Erro ao processar arquivo.');
+                        }
+                      };
+                      reader.readAsText(file);
+                      e.target.value = '';
+                    }}
+                    className="hidden"
+                    accept=".json,.txt"
+                  />
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full py-5 bg-white/5 border border-white/10 rounded-3xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-3"
+                  >
+                    <FileJson className="w-5 h-5 text-blue-400" /> Importar via Arquivo
+                  </button>
+                </Card>
+
+                <Card className="col-span-1 lg:col-span-2 p-10 flex flex-col gap-6 border-blue-500/10">
+                  <div className="flex flex-col gap-2">
+                    <h3 className="text-xl font-bold text-white">Análise Avançada com IA</h3>
+                    <p className="text-slate-500 text-sm">Seus dados não têm limites. Exporte seu histórico e peça para a sua IA favorita gerar planilhas do Excel, gráficos personalizados ou análises profundas sobre sua saúde financeira.</p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
+                    <button 
+                      onClick={() => {
+                        const topCats = categoryData.slice(0, 5).map(c => `${c.name}: ${formatCurrency(c.value)}`).join(', ');
+                        const reportPrompt = `Relatório Financeiro VerdeGrana - Saúde Financeira Master
+                        
+Idealizador: Luiz Gustavo Andrade Santos
+Data do Relatório: ${new Date().toLocaleDateString('pt-BR')}
+
+RESUMO DO PERÍODO:
+- Saldo Atual: ${formatCurrency(stats.total)}
+- Total Receitas: ${formatCurrency(stats.income)}
+- Total Despesas: ${formatCurrency(stats.expenses)}
+- Fluxo Líquido: ${formatCurrency(stats.total)}
+
+TOP CATEGORIAS DE GASTO:
+${topCats || 'Sem dados suficientes'}
+
+MÉTRICAS:
+- Total Transactions: ${transactions.length}
+- Média por Transação: ${formatCurrency(stats.expenses / (transactions.filter(t => t.type === 'saída').length || 1))}
+
+SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomendações de investimentos baseados nestes dados.`;
+                        navigator.clipboard.writeText(reportPrompt);
+                        toast.success('Relatório para IA copiado!');
+                      }}
+                      className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2 text-xs"
+                    >
+                      <Copy className="w-4 h-4 text-emerald-400" /> Área de Transferência
+                    </button>
+                    
+                    <button 
+                      onClick={() => {
+                        const data = JSON.stringify({ transactions, categories }, null, 2);
+                        const blob = new Blob([data], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `verdegrana_export.txt`;
+                        link.click();
+                        toast.success('Arquivo .TXT baixado!');
+                      }}
+                      className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2 text-xs"
+                    >
+                      <Download className="w-4 h-4 text-blue-400" /> Baixar arquivo .TXT
+                    </button>
+
+                    <button 
+                      onClick={() => {
+                        const data = JSON.stringify({ transactions, categories }, null, 2);
+                        const blob = new Blob([data], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `verdegrana_export.json`;
+                        link.click();
+                        toast.success('Arquivo .JSON baixado!');
+                      }}
+                      className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-300 font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2 text-xs"
+                    >
+                      <FileJson className="w-4 h-4 text-emerald-400" /> Baixar arquivo .JSON
+                    </button>
+                  </div>
                 </Card>
               </motion.div>
             )}
@@ -2016,7 +2127,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                     <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl"><FolderSync /></div>
                     <h3 className="text-xl font-bold text-white">Sincronização Local</h3>
                   </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">Conecte o VerdeGrana a uma pasta no seu computador para sincronização de arquivos em tempo real. Isso garante persistência absoluta.</p>
+                  <p className="text-slate-400 text-sm leading-relaxed">Conecte a uma pasta pra sincronizar e guardar seus arquivos, o VerdeGrana fará isso em tempo real. Isso garante que nada seja perdido tão facilmente.</p>
                   <button 
                     onClick={() => {
                       if (isTrial) {
@@ -2056,7 +2167,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                 <Card className="p-10 flex flex-col gap-6">
                   <div className="flex items-center gap-4">
                     <div className="p-3 bg-rose-500/20 text-rose-400 rounded-2xl"><Trash2 /></div>
-                    <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Gerencial de Dados</h3>
+                    <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Gerenciamento de Dados</h3>
                   </div>
                   <div className="space-y-4">
                     <button 
@@ -2115,7 +2226,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                   </div>
                   <div className="space-y-6 relative max-w-4xl">
                     <p className="text-lg text-slate-300 font-medium leading-relaxed">
-                      <strong className="text-white">VerdeGrana: Finanças & Tecnologia.</strong> Este aplicativo é um projeto inovador idealizado por <strong className="text-white">Luiz Gustavo Andrade Santos</strong>, desenvolvido 100% com Inteligência Artificial. Une gestão contábil moderna à praticidade do processamento de linguagem natural.
+                      Olá! Sou Luiz Gustavo Andrade Santos, criador do VerdeGrana. Desenvolvi este aplicativo para tentar controlar meus próprios gastos (especialmente com o uso de ferramentas de IA), unindo a precisão da visão contábil à praticidade da tecnologia. Este é um projeto vivo e em constante evolução, e estou à inteira disposição para implementar atualizações e melhorias imediatamente.
                     </p>
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 pt-2">
                        <a href="mailto:roogxbox@gmail.com" className="px-8 py-4 bg-emerald-600 rounded-2xl font-black text-white hover:bg-emerald-500 transition-all flex items-center gap-3">
@@ -2291,7 +2402,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
 
       {/* MOBILE BOTTOM NAVBAR */}
       {bootStage === 'ready' && (
-        <nav className="fixed bottom-0 left-0 right-0 glass backdrop-blur-3xl border-t border-white/5 flex items-center justify-around py-4 pb-safe z-50">
+        <nav className="fixed bottom-0 left-0 w-full glass bg-slate-950/95 backdrop-blur-3xl border-t border-white/5 flex items-center justify-around py-4 pb-safe z-50 flex-shrink-0">
           <MobileNavItem icon={<Home />} label="Início" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} />
           <MobileNavItem icon={<ReceiptText />} label="Lançamentos" active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')} />
           <button 
@@ -2548,28 +2659,28 @@ function MobileNavItem({ icon, label, active, onClick }: any) {
     <button 
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-1 transition-all",
+        "flex flex-col items-center gap-1 transition-all flex-1 min-w-0 px-1",
         active ? "text-emerald-400 scale-110" : "text-slate-500 hover:text-slate-300"
       )}
     >
       <div className={cn(
-        "p-2 rounded-xl transition-all",
+        "p-2 rounded-xl transition-all flex-shrink-0",
         active ? "bg-emerald-500/10" : ""
       )}>
-        {React.cloneElement(icon, { size: active ? 24 : 20 })}
+        {React.cloneElement(icon, { size: active ? 22 : 20 })}
       </div>
-      <span className="text-[10px] font-black uppercase tracking-widest leading-none">{label}</span>
+      <span className="text-[9px] font-black uppercase tracking-widest leading-none truncate w-full text-center px-1">{label}</span>
     </button>
   );
 }
 
 function StatSmall({ label, value, color, prefix = '' }: any) {
   return (
-    <div className="bg-slate-900 px-6 py-5 rounded-[2rem] border border-white/5 flex flex-col items-center sm:items-start min-w-[120px] shadow-sm">
-      <span className="text-[10px] uppercase font-black text-slate-500 tracking-[0.2em] mb-1.5">{label}</span>
-      <span className={cn("text-xl font-black tracking-tighter truncate w-full flex", color)}>
-        <span className="mr-0.5 opacity-60 font-medium">{prefix}</span>
-        {formatCurrency(value)}
+    <div className="bg-slate-900 px-6 py-5 rounded-[2rem] border border-white/5 flex flex-col items-center sm:items-start min-w-0 w-full shadow-sm overflow-hidden box-border">
+      <span className="text-[10px] uppercase font-black text-slate-500 tracking-[0.2em] mb-1.5 truncate w-full">{label}</span>
+      <span className={cn("text-xl font-black tracking-tighter truncate w-full flex min-w-0", color)}>
+        <span className="mr-0.5 opacity-60 font-medium flex-shrink-0">{prefix}</span>
+        <span className="truncate">{formatCurrency(value)}</span>
       </span>
     </div>
   );

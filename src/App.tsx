@@ -201,103 +201,117 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick, viewMode = '
   };
 
   const cumulativeData = useMemo(() => {
-    if (!isPerformance) return [];
-    let runningSum = 0;
-    return data.map(d => {
-      let val = 0;
-      if (viewMode === 'tudo' || viewMode === 'personalizado') {
-        val = d.income - d.expense;
-      } else if (viewMode === 'receitas') {
-        val = d.income;
-      } else if (viewMode === 'despesas') {
-        val = d.expense;
-      }
-      runningSum += val;
-      return runningSum;
-    });
+    try {
+      if (!isPerformance) return [];
+      let runningSum = 0;
+      return data.map(d => {
+        let val = 0;
+        if (viewMode === 'tudo' || viewMode === 'personalizado') {
+          val = d.income - d.expense;
+        } else if (viewMode === 'receitas') {
+          val = d.income;
+        } else if (viewMode === 'despesas') {
+          val = d.expense;
+        }
+        runningSum += val;
+        return runningSum;
+      });
+    } catch (e) {
+      console.error("Erro ao calcular dados acumulados:", e);
+      return [];
+    }
   }, [data, isPerformance, viewMode]);
 
   const maxVal = useMemo(() => {
-    if (isPerformance) {
-        if (cumulativeData.length === 0) return 100;
-        return Math.max(...cumulativeData.map(Math.abs), 100);
+    try {
+      if (isPerformance) {
+          if (cumulativeData.length === 0) return 100;
+          return Math.max(...cumulativeData.map(Math.abs), 100);
+      }
+      return Math.max(...data.flatMap(d => [d.income, d.expense]), 100);
+    } catch (e) {
+      return 100;
     }
-    return Math.max(...data.flatMap(d => [d.income, d.expense]), 100);
   }, [data, isPerformance, cumulativeData]);
   
   const chartData = useMemo(() => {
-    if (isPerformance) {
-      const color = (viewMode === 'despesas') ? '#ef4444' : '#10b981';
+    try {
+      if (isPerformance) {
+        const color = (viewMode === 'despesas') ? '#ef4444' : '#10b981';
+        return {
+          labels: data.map(d => d.name),
+          datasets: [{
+            label: 'Acumulado',
+            data: cumulativeData,
+            fill: true,
+            tension: 0.4,
+            borderColor: color,
+            backgroundColor: `${color}33`,
+            pointRadius: data.map((_, i) => i === activeIndex ? 6 : 0),
+            pointBackgroundColor: data.map((_, i) => i === activeIndex ? '#ffffff' : color),
+            pointHoverRadius: 8,
+            pointHitRadius: 15,
+          }]
+        };
+      }
+
       return {
         labels: data.map(d => d.name),
-        datasets: [{
-          label: 'Acumulado',
-          data: cumulativeData,
-          fill: true,
-          tension: 0.4,
-          borderColor: color,
-          backgroundColor: `${color}33`,
-          pointRadius: data.map((_, i) => i === activeIndex ? 6 : 0),
-          pointBackgroundColor: data.map((_, i) => i === activeIndex ? '#ffffff' : color),
-          pointHoverRadius: 8,
-          pointHitRadius: 15,
-        }]
+        datasets: [
+          {
+            label: 'Receitas (Base)',
+            data: data.map(d => d.income),
+            backgroundColor: 'rgba(16, 185, 129, 0.8)',
+            borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+            borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+            borderRadius: 4,
+            barPercentage: 0.8,
+            categoryPercentage: 0.8,
+            grouped: false,
+            order: 2,
+          },
+          {
+            label: 'Despesas (Base)',
+            data: data.map(d => d.expense),
+            backgroundColor: 'rgba(244, 63, 94, 0.8)',
+            borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+            borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+            borderRadius: 4,
+            barPercentage: 0.8,
+            categoryPercentage: 0.8,
+            grouped: false,
+            order: 2,
+          },
+          {
+            label: 'Receitas (Top)',
+            data: data.map(d => d.income < d.expense ? d.income : 0),
+            backgroundColor: 'rgba(16, 185, 129, 1)',
+            borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+            borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+            borderRadius: 4,
+            barPercentage: 0.8,
+            categoryPercentage: 0.8,
+            grouped: false,
+            order: 1,
+          },
+          {
+            label: 'Despesas (Top)',
+            data: data.map(d => d.expense < d.income ? d.expense : 0),
+            backgroundColor: 'rgba(244, 63, 94, 1)',
+            borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
+            borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
+            borderRadius: 4,
+            barPercentage: 0.8,
+            categoryPercentage: 0.8,
+            grouped: false,
+            order: 1,
+          }
+        ]
       };
+    } catch (e) {
+      console.error("Erro ao gerar chartData:", e);
+      return { labels: [], datasets: [] };
     }
-
-    return {
-      labels: data.map(d => d.name),
-      datasets: [
-        {
-          label: 'Receitas (Base)',
-          data: data.map(d => d.income),
-          backgroundColor: 'rgba(16, 185, 129, 0.8)',
-          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
-          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
-          borderRadius: 4,
-          barPercentage: 0.8,
-          categoryPercentage: 0.8,
-          grouped: false,
-          order: 2,
-        },
-        {
-          label: 'Despesas (Base)',
-          data: data.map(d => d.expense),
-          backgroundColor: 'rgba(244, 63, 94, 0.8)',
-          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
-          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
-          borderRadius: 4,
-          barPercentage: 0.8,
-          categoryPercentage: 0.8,
-          grouped: false,
-          order: 2,
-        },
-        {
-          label: 'Receitas (Top)',
-          data: data.map(d => d.income < d.expense ? d.income : 0),
-          backgroundColor: 'rgba(16, 185, 129, 1)',
-          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
-          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
-          borderRadius: 4,
-          barPercentage: 0.8,
-          categoryPercentage: 0.8,
-          grouped: false,
-          order: 1,
-        },
-        {
-          label: 'Despesas (Top)',
-          data: data.map(d => d.expense < d.income ? d.expense : 0),
-          backgroundColor: 'rgba(244, 63, 94, 1)',
-          borderColor: data.map((_, i) => i === activeIndex ? '#ffffff' : 'transparent'),
-          borderWidth: data.map((_, i) => i === activeIndex ? 3 : 0),
-          borderRadius: 4,
-          barPercentage: 0.8,
-          categoryPercentage: 0.8,
-          grouped: false,
-          order: 1,
-        }
-      ]
-    };
   }, [data, activeIndex, isPerformance, cumulativeData, viewMode]);
 
   const options = useMemo(() => ({
@@ -308,51 +322,55 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick, viewMode = '
       padding: { bottom: 25 }
     },
     onClick: (e: any, elements: any) => {
-      const chart = chartRef.current;
-      if (!chart) return;
+      try {
+        const chart = chartRef.current;
+        if (!chart) return;
 
-      if (elements.length > 0) {
-        const index = elements[0].index;
-        setActiveIndex(index);
-        const item = data[index];
-        
-        if (isPerformance) {
-           setActiveData({
-             income: item.income,
-             expense: item.expense,
-             net: item.income - item.expense,
-             cumulative: cumulativeData[index],
-             date: new Date(item.fullDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
-           });
-
-           chart.data.datasets[0].pointRadius = data.map((_, i) => i === index ? 6 : 0);
-           const color = (viewMode === 'despesas') ? '#ef4444' : '#10b981';
-           chart.data.datasets[0].pointBackgroundColor = data.map((_, i) => i === index ? '#ffffff' : color);
-        } else {
-          setActiveData({
-            income: item.income,
-            expense: item.expense,
-            net: item.income - item.expense
-          });
-          if (onPointClick) onPointClick(data[index].fullDate);
+        if (elements.length > 0) {
+          const index = elements[0].index;
+          setActiveIndex(index);
+          const item = data[index];
           
-          chart.data.datasets.forEach((dataset: any) => {
-            dataset.borderColor = data.map((_, i) => i === index ? '#ffffff' : 'transparent');
-            dataset.borderWidth = data.map((_, i) => i === index ? 3 : 0);
-          });
-        }
-      } else {
-        setActiveIndex(null);
-        setActiveData(null);
-        if (isPerformance) {
-          chart.data.datasets[0].pointRadius = 0;
+          if (isPerformance) {
+            setActiveData({
+              income: item.income,
+              expense: item.expense,
+              net: item.income - item.expense,
+              cumulative: cumulativeData[index],
+              date: new Date(item.fullDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+            });
+
+            chart.data.datasets[0].pointRadius = data.map((_, i: number) => i === index ? 6 : 0);
+            const color = (viewMode === 'despesas') ? '#ef4444' : '#10b981';
+            chart.data.datasets[0].pointBackgroundColor = data.map((_, i: number) => i === index ? '#ffffff' : color);
+          } else {
+            setActiveData({
+              income: item.income,
+              expense: item.expense,
+              net: item.income - item.expense
+            });
+            if (onPointClick) onPointClick(data[index].fullDate);
+            
+            chart.data.datasets.forEach((dataset: any) => {
+              dataset.borderColor = data.map((_, i: number) => i === index ? '#ffffff' : 'transparent');
+              dataset.borderWidth = data.map((_, i: number) => i === index ? 3 : 0);
+            });
+          }
         } else {
-          chart.data.datasets.forEach((dataset: any) => {
-            dataset.borderWidth = 0;
-          });
+          setActiveIndex(null);
+          setActiveData(null);
+          if (isPerformance) {
+            chart.data.datasets[0].pointRadius = 0;
+          } else {
+            chart.data.datasets.forEach((dataset: any) => {
+              dataset.borderWidth = 0;
+            });
+          }
         }
+        chart.update('none');
+      } catch (err) {
+        console.error("Erro ao manipular clique no gráfico:", err);
       }
-      chart.update('none');
     },
     interaction: {
       mode: 'index' as const,
@@ -433,76 +451,89 @@ const TimelineChart = ({ data, isPerformance = false, onPointClick, viewMode = '
     }
   }), [data, onPointClick, maxVal, isPerformance, cumulativeData, viewMode]);
 
-  return (
-    <div className="w-full h-full relative group flex flex-col">
-      {activeData && !isPerformance && (
-        <motion.div 
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-wrap justify-between items-center text-[10px] p-3 bg-slate-900/80 backdrop-blur-md rounded-xl mb-4 border border-white/5 shadow-2xl gap-3"
-        >
-           <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-slate-400 font-black uppercase tracking-widest">Receitas:</span>
-              <span className="text-emerald-400 font-black">{formatCurrency(activeData.income)}</span>
-           </div>
-           <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-rose-500" />
-              <span className="text-slate-400 font-black uppercase tracking-widest">Despesas:</span>
-              <span className="text-rose-400 font-black">{formatCurrency(activeData.expense)}</span>
-           </div>
-           <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-slate-400" />
-              <span className="text-slate-400 font-black uppercase tracking-widest">Líquido:</span>
-              <span className={cn("font-black", activeData.net >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                {formatCurrency(activeData.net)}
-              </span>
-           </div>
-        </motion.div>
-      )}
+  try {
+    return (
+      <div className="w-full h-full relative group flex flex-col">
+        {activeData && !isPerformance && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-wrap justify-between items-center text-[10px] p-3 bg-slate-900/80 backdrop-blur-md rounded-xl mb-4 border border-white/5 shadow-2xl gap-3"
+          >
+            <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="text-slate-400 font-black uppercase tracking-widest">Receitas:</span>
+                <span className="text-emerald-400 font-black">{formatCurrency(activeData.income)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-rose-500" />
+                <span className="text-slate-400 font-black uppercase tracking-widest">Despesas:</span>
+                <span className="text-rose-400 font-black">{formatCurrency(activeData.expense)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-slate-400" />
+                <span className="text-slate-400 font-black uppercase tracking-widest">Líquido:</span>
+                <span className={cn("font-black", activeData.net >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                  {formatCurrency(activeData.net)}
+                </span>
+            </div>
+          </motion.div>
+        )}
 
-      {activeData && isPerformance && (
-        <motion.div 
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-wrap justify-between items-center text-[10px] p-3 bg-slate-900/80 backdrop-blur-md rounded-xl mb-4 border border-white/5 shadow-2xl gap-3"
-        >
-           <div className="flex items-center gap-2">
-              <span className="text-slate-400 font-black uppercase tracking-widest">Acumulado até {activeData.date}:</span>
-              <span className={cn("font-black text-xs", (activeData.cumulative || 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                {formatCurrency(activeData.cumulative || 0)}
-              </span>
-           </div>
-        </motion.div>
-      )}
+        {activeData && isPerformance && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-wrap justify-between items-center text-[10px] p-3 bg-slate-900/80 backdrop-blur-md rounded-xl mb-4 border border-white/5 shadow-2xl gap-3"
+          >
+            <div className="flex items-center gap-2">
+                <span className="text-slate-400 font-black uppercase tracking-widest">Acumulado até {activeData.date}:</span>
+                <span className={cn("font-black text-xs", (activeData.cumulative || 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                  {formatCurrency(activeData.cumulative || 0)}
+                </span>
+            </div>
+          </motion.div>
+        )}
 
-      <div className="flex justify-end items-center gap-2 mb-2">
-         <div className="flex bg-slate-900/60 backdrop-blur-xl p-1 rounded-xl border border-white/10">
-            <button 
-              onClick={handleReset}
-              className="px-3 h-8 flex items-center gap-2 hover:bg-white/10 rounded-lg text-[9px] font-black uppercase text-slate-300 transition-all"
-            >
-              <RefreshCw className="w-3 h-3" />
-              Resetar Zoom
-            </button>
-         </div>
-      </div>
+        <div className="flex justify-end items-center gap-2 mb-2">
+          <div className="flex bg-slate-900/60 backdrop-blur-xl p-1 rounded-xl border border-white/10">
+              <button 
+                onClick={handleReset}
+                className="px-3 h-8 flex items-center gap-2 hover:bg-white/10 rounded-lg text-[9px] font-black uppercase text-slate-300 transition-all"
+              >
+                <RefreshCw className="w-3 h-3" />
+                Resetar Zoom
+              </button>
+          </div>
+        </div>
 
-      <div className="flex-1 relative bg-black/10 rounded-2xl border border-white/5 shadow-inner overflow-hidden">
-        <div className="w-full h-full relative">
-          {isPerformance ? (
-             <ChartLine 
-               ref={chartRef} 
-               data={chartData} 
-               options={options} 
-             />
-          ) : (
-            <ChartBar ref={chartRef} data={chartData} options={options} />
-          )}
+        <div className="flex-1 relative bg-black/10 rounded-2xl border border-white/5 shadow-inner overflow-hidden">
+          <div className="w-full h-full relative">
+            {isPerformance ? (
+              <ChartLine 
+                ref={chartRef} 
+                data={chartData} 
+                options={options} 
+              />
+            ) : (
+              <ChartBar ref={chartRef} data={chartData} options={options} />
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  } catch (err) {
+    console.error("Erro fatal ao renderizar TimelineChart:", err);
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900/50 rounded-2xl border border-white/5 p-8 text-center gap-4">
+        <Ghost className="w-10 h-10 text-slate-700" />
+        <div className="space-y-1">
+          <p className="text-xs font-black text-slate-500 uppercase">Ops! O Gráfico falhou</p>
+          <p className="text-[10px] text-slate-600">Tente atualizar a página ou mudar os filtros.</p>
+        </div>
+      </div>
+    );
+  }
 };
 
 
@@ -548,75 +579,80 @@ const CategoryDonutSection = ({
   setViewMode?: (m: 'tudo' | 'receitas' | 'despesas') => void,
   title: string
 }) => {
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex flex-col gap-4 mb-6">
-        <div className="flex justify-between items-center">
-          <h3 className="font-black text-lg uppercase tracking-tighter">{title}</h3>
-          {setColorMode && (
-            <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
-                <button 
-                  onClick={() => setColorMode('unique')}
-                  className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", colorMode === 'unique' ? "bg-white/10 text-white" : "text-slate-500")}
-                >
-                  COLORIDO
-                </button>
-                <button 
-                  onClick={() => setColorMode('flow')}
-                  className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", colorMode === 'flow' ? "bg-white/10 text-white" : "text-slate-500")}
-                >
-                  FLUXO
-                </button>
+  try {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex flex-col gap-4 mb-6">
+          <div className="flex justify-between items-center">
+            <h3 className="font-black text-lg uppercase tracking-tighter">{title}</h3>
+            {setColorMode && (
+              <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+                  <button 
+                    onClick={() => setColorMode('unique')}
+                    className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", colorMode === 'unique' ? "bg-white/10 text-white" : "text-slate-500")}
+                  >
+                    COLORIDO
+                  </button>
+                  <button 
+                    onClick={() => setColorMode('flow')}
+                    className={cn("px-2 py-1 text-[8px] font-black rounded transition-all", colorMode === 'flow' ? "bg-white/10 text-white" : "text-slate-500")}
+                  >
+                    FLUXO
+                  </button>
+              </div>
+            )}
+          </div>
+          
+          {setViewMode && (
+            <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
+                {(['tudo', 'receitas', 'despesas'] as const).map(m => (
+                  <button 
+                    key={m}
+                    onClick={() => setViewMode(m)}
+                    className={cn(
+                      "flex-1 py-2 text-[10px] font-black rounded-xl transition-all", 
+                      viewMode === m ? (m === 'tudo' ? "bg-white/10 text-white" : m === 'receitas' ? "bg-emerald-500 text-white" : "bg-rose-500 text-white") : "text-slate-500"
+                    )}
+                  >
+                    {m.toUpperCase()}
+                  </button>
+                ))}
             </div>
           )}
         </div>
         
-        {setViewMode && (
-          <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
-              {(['tudo', 'receitas', 'despesas'] as const).map(m => (
-                <button 
-                  key={m}
-                  onClick={() => setViewMode(m)}
-                  className={cn(
-                    "flex-1 py-2 text-[10px] font-black rounded-xl transition-all", 
-                    viewMode === m ? (m === 'tudo' ? "bg-white/10 text-white" : m === 'receitas' ? "bg-emerald-500 text-white" : "bg-rose-500 text-white") : "text-slate-500"
-                  )}
-                >
-                  {m.toUpperCase()}
-                </button>
-              ))}
+        <div className="flex-1 min-h-[250px] relative">
+          <CategoryDonut data={data} colorMode={colorMode} />
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-white/5 space-y-2 overflow-y-auto max-h-32 custom-scrollbar pr-2">
+          <div className="text-[10px] uppercase font-black text-slate-500 mb-2 tracking-widest">Mapa de Categorias (%)</div>
+          <div className="grid grid-cols-1 gap-1.5">
+              {data.sort((a, b) => b.value - a.value).map((cat, i) => {
+                const dominantType = cat.income >= cat.expense ? 'entrada' : 'saída';
+                let fill = colorMode === 'unique' ? VIBRANT_PALETTE[i % VIBRANT_PALETTE.length] : (dominantType === 'entrada' ? '#10b981' : '#f43f5e');
+
+                return (
+                  <div key={cat.name} className="flex items-center justify-between text-[10px] bg-white/2 p-2 rounded-xl border border-white/5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: fill, opacity: colorMode === 'unique' ? 1 : 0.4 + (i * 0.1) }} />
+                      <span className="font-bold text-slate-400 truncate max-w-[120px] tracking-tight">{cat.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="font-black text-white">{formatCurrency(cat.value)}</span>
+                        <span className="text-[8px] text-slate-600 font-bold">{( (cat.value / (data.reduce((a,b)=>a+b.value, 0) || 1)) * 100).toFixed(0)}%</span>
+                    </div>
+                  </div>
+                );
+              })}
           </div>
-        )}
+        </div>
       </div>
-      
-      <div className="flex-1 min-h-[250px] relative">
-        <CategoryDonut data={data} colorMode={colorMode} />
-      </div>
-
-      <div className="mt-4 pt-4 border-t border-white/5 space-y-2 overflow-y-auto max-h-32 custom-scrollbar pr-2">
-         <div className="text-[10px] uppercase font-black text-slate-500 mb-2 tracking-widest">Mapa de Categorias (%)</div>
-         <div className="grid grid-cols-1 gap-1.5">
-            {data.sort((a, b) => b.value - a.value).map((cat, i) => {
-               const dominantType = cat.income >= cat.expense ? 'entrada' : 'saída';
-               let fill = colorMode === 'unique' ? VIBRANT_PALETTE[i % VIBRANT_PALETTE.length] : (dominantType === 'entrada' ? '#10b981' : '#f43f5e');
-
-               return (
-                 <div key={cat.name} className="flex items-center justify-between text-[10px] bg-white/2 p-2 rounded-xl border border-white/5">
-                   <div className="flex items-center gap-2">
-                     <div className="w-2 h-2 rounded-full" style={{ backgroundColor: fill, opacity: colorMode === 'unique' ? 1 : 0.4 + (i * 0.1) }} />
-                     <span className="font-bold text-slate-400 truncate max-w-[120px] tracking-tight">{cat.name}</span>
-                   </div>
-                   <div className="flex items-center gap-2">
-                      <span className="font-black text-white">{formatCurrency(cat.value)}</span>
-                      <span className="text-[8px] text-slate-600 font-bold">{( (cat.value / (data.reduce((a,b)=>a+b.value, 0) || 1)) * 100).toFixed(0)}%</span>
-                   </div>
-                 </div>
-               );
-            })}
-         </div>
-      </div>
-    </div>
-  );
+    );
+  } catch (err) {
+    console.error("Erro ao renderizar CategoryDonutSection:", err);
+    return <div className="p-4 text-xs text-rose-500">Erro ao carregar análise de categorias</div>;
+  }
 };
 
 let dbInstance: any = null;
@@ -711,6 +747,7 @@ export default function App() {
   const [isDirty, setIsDirty] = useState(false);
   const [isFolderPermissionMissing, setIsFolderPermissionMissing] = useState(false);
   const [isDashboardRevealed, setIsDashboardRevealed] = useState(false);
+  const isFSApiSupported = 'showDirectoryPicker' in window;
 
   // UI States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -827,6 +864,10 @@ export default function App() {
       setIsTrial(true);
       setBootStage('welcome');
     } else {
+      if (!isFSApiSupported) {
+        alert("Seu navegador atual não suporta a sincronização de pastas locais (File System Access API). Por favor, use o Chrome em computadores ou opte pelo Modo Trial.");
+        return;
+      }
       setBootStage('security');
     }
   };
@@ -853,7 +894,7 @@ export default function App() {
           const data = JSON.parse(text);
           
           // Elastic Schema: Discover categories from transactions if they aren't in the registry
-          const existingCategories = data.categories || DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }));
+          const existingCategories = data.categories || DEFAULT_CATEGORIES.map((c: string) => ({ id: c.toLowerCase(), name: c }));
           const discoveredCategories = [...existingCategories];
           
           if (data.transactions) {
@@ -888,12 +929,13 @@ export default function App() {
       
       setIsFolderPermissionMissing(false);
       setSyncStatus('synced');
-      // CRITICAL: Force transition to Dash
+      // CRITICAL: Force transition to Dash ONLY AFTER SUCCESS
       setBootStage('ready');
       return true;
-    } catch (e) {
-      console.error("ERRO CRÍTICO NA SINCRONIZAÇÃO:", e);
+    } catch (e: any) {
+      console.error("ERRO CRÍTICO NA LEITURA DO ARQUIVO:", e);
       setSyncStatus('error');
+      alert("Erro ao ler os dados da pasta. O arquivo pode estar corrompido. Código: " + e.message);
       return false;
     }
   };
@@ -966,22 +1008,40 @@ export default function App() {
   const handleRequestFolderPermission = async () => {
     if (!dirHandle) return;
     try {
+      // MOD 2: Massive Try...Catch rescue protocol
       // @ts-ignore
       const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
       if (permission === 'granted') {
+        const success = await readFromFile(dirHandle);
+        if (!success) {
+           throw new Error("Falha ao ler dados após permissão concedida.");
+        }
+        // Stage transition happens INSIDE readFromFile on success
         setIsFolderPermissionMissing(false);
-        // readFromFile now handles the state transition to 'ready'
-        await readFromFile(dirHandle);
       } else {
         toast.error('Permissão negada para acessar a pasta.');
       }
-    } catch (e) {
-      console.error(e);
-      toast.error('Não foi possível obter permissão da pasta.');
+    } catch (e: any) {
+      console.error("FALHA CRÍTICA NO BOOT:", e);
+      alert("Erro ao acessar a pasta sincronizada. Verifique as permissões ou tente sincronizar novamente. Código: " + e.message);
+      
+      // The Failsafe Rescue protocol
+      try {
+        if (dbInstance) await clearState(dbInstance);
+        localStorage.removeItem('verdegrana_db_handle');
+      } catch (innerErr) {
+        console.error("Erro ao limpar estado corrompido:", innerErr);
+      }
+      
+      window.location.reload();
     }
   };
 
   const handleSelectDirectory = async () => {
+    if (!isFSApiSupported) {
+      alert("Seu navegador atual não suporta a sincronização de pastas locais (File System Access API). Por favor, use o Chrome ou opte pelo Modo Trial.");
+      return;
+    }
     try {
       // @ts-ignore
       const handle = await window.showDirectoryPicker();

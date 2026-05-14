@@ -738,6 +738,20 @@ export default function App() {
   const [quickAddDate, setQuickAddDate] = useState<string | null>(null);
   const [isChartReady, setIsChartReady] = useState(false);
 
+  const [uiScale, setUiScale] = useState<number>(() => {
+    const saved = localStorage.getItem('verdegrana_ui_scale');
+    return saved ? parseInt(saved) : 100;
+  });
+
+  const applyUIScale = useCallback((scaleValue: number) => {
+    document.documentElement.style.fontSize = `${scaleValue}%`;
+  }, []);
+
+  useEffect(() => {
+    applyUIScale(uiScale);
+    localStorage.setItem('verdegrana_ui_scale', uiScale.toString());
+  }, [uiScale, applyUIScale]);
+
   const handlePointClick = useCallback((date: string) => {
     setSelectedPeriod(date);
   }, []);
@@ -2162,6 +2176,34 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                   >
                     <Download className="w-4 h-4" /> Baixar Backup Local (.json)
                   </button>
+                </Card>
+
+                <Card className="p-10 flex flex-col gap-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-2xl"><Monitor /></div>
+                    <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Aparência</h3>
+                  </div>
+                  <p className="text-slate-400 text-sm leading-relaxed">Ajuste o tamanho da interface para caber mais informações na tela.</p>
+                  <div className="flex flex-row gap-2 mt-2">
+                    {[
+                      { label: 'Compacto', value: 85 },
+                      { label: 'Menor', value: 90 },
+                      { label: 'Padrão', value: 100 }
+                    ].map((scale) => (
+                      <button
+                        key={scale.value}
+                        onClick={() => setUiScale(scale.value)}
+                        className={cn(
+                          "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                          uiScale === scale.value 
+                            ? "bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-500/20" 
+                            : "bg-white/5 text-slate-500 border-white/10 hover:bg-white/10"
+                        )}
+                      >
+                        {scale.label} ({scale.value}%)
+                      </button>
+                    ))}
+                  </div>
                 </Card>
 
                 <Card className="p-10 flex flex-col gap-6">

@@ -38,6 +38,15 @@ body {
   @apply bg-emerald-500/10 rounded-full hover:bg-emerald-500/30 transition-colors;
 }
 
+/* Hide scrollbar */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Animations */
 @keyframes pulse-glow {
   0%, 100% { opacity: 0.5; filter: blur(40px); }

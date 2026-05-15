@@ -64,12 +64,15 @@ import { Bar as ChartBar, Line as ChartLine, Doughnut } from 'react-chartjs-2';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import 'hammerjs';
 
-import { createClient } from '@supabase/supabase-js';
+// Removed import as requested for single-file/CDN compatibility
+// import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = 'https://cigrmsoprnefiwbenbuv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpZ3Jtc29wcm5lZml3YmVuYnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4MTM0ODIsImV4cCI6MjA5NDM4OTQ4Mn0.C_njZ0VD_qwKnGGgEcaBUy9Qm0xXbtia1inucnmqckg';
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Using global supabase object from CDN
+// @ts-ignore
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 ChartJS.register(
   CategoryScale,
@@ -688,7 +691,7 @@ export default function App() {
     action: () => void;
   }>({ open: false, title: '', description: '', action: () => {} });
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem('verdegrana_transactions');
+    const saved = localStorage.getItem('verdegrana_data');
     return saved ? JSON.parse(saved) : [];
   });
   const [history, setHistory] = useState<Transaction[][]>([]);
@@ -848,7 +851,7 @@ export default function App() {
 
   // Sync state to LocalStorage (Instant Persistence)
   useEffect(() => {
-    localStorage.setItem('verdegrana_transactions', JSON.stringify(transactions));
+    localStorage.setItem('verdegrana_data', JSON.stringify(transactions));
   }, [transactions]);
 
   useEffect(() => {
@@ -1052,7 +1055,7 @@ export default function App() {
       })) : [];
 
       // Reconciliation: Overwrite localStorage with fresh cloud data
-      localStorage.setItem('verdegrana_transactions', JSON.stringify(mappedTxs));
+      localStorage.setItem('verdegrana_data', JSON.stringify(mappedTxs));
       setTransactions(mappedTxs);
       setSyncStatus('synced');
       return { transactions: mappedTxs };
@@ -1555,6 +1558,7 @@ export default function App() {
       <Toaster position="top-right" theme="dark" richColors />
       <input 
         type="file" 
+        id="localFileInput"
         ref={localFileRef} 
         onChange={handleLocalFileLoad} 
         accept=".json" 
@@ -1641,7 +1645,12 @@ export default function App() {
                     syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
                   )}>
                     {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
-                    {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'ERRO DE CONEXÃO'}
+                    <span className={cn(
+                       "font-bold",
+                       syncStatus === 'synced' ? "text-emerald-500" : ""
+                    )}>
+                      {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'ERRO DE CONEXÃO'}
+                    </span>
                   </div>
                 )}
               </div>
@@ -2346,7 +2355,12 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                   </p>
                   <div className="mt-auto bg-emerald-500/5 p-4 rounded-2xl border border-emerald-500/10">
                      <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Status do Armazenamento</p>
-                     <p className="text-sm text-slate-300 font-bold truncate">{isCloudMode ? `Nuvem: ${user?.email}` : 'Ficheiro Local (Offline)'}</p>
+                     <p className={cn(
+                       "text-sm font-bold truncate transition-all",
+                       isCloudMode ? "text-emerald-500" : "text-slate-300"
+                     )}>
+                       {isCloudMode ? `Nuvem: ${user?.email}` : 'Ficheiro Local (Offline)'}
+                     </p>
                   </div>
                   <button 
                     onClick={() => {

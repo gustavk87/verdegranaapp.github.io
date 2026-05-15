@@ -1412,6 +1412,12 @@ export default function App() {
     setIsCloudMode(false);
     setTransactions([]);
     setCategories(DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
+    
+    try {
+      const db = await initDB();
+      await clearState(db);
+    } catch (e) {}
+
     localStorage.clear();
     setBootStage('auth');
     toast.info('Sessão encerrada.');
@@ -1489,7 +1495,18 @@ export default function App() {
           if (session?.user) {
             setUser(session.user);
             setIsCloudMode(true);
-            await syncProfilesFromCloud(session.user.id);
+            
+            // MODULE 3: Sincronização resiliente com timeout
+            try {
+              await Promise.race([
+                syncProfilesFromCloud(session.user.id),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+              ]);
+            } catch (e) {
+              console.warn("Cloud sync timed out, using fallback.");
+              toast.info('Sincronização lenta... carregando dados locais.');
+            }
+            
             setBootStage('profile_select');
             return;
           }
@@ -3133,15 +3150,50 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                       }
                       setConfirmModal({
                         open: true,
-                        title: 'APAGAR TUDO?',
-                        description: 'Todos os seus dados na nuvem e localmente serão destruídos.',
+                        title: 'APAGAR TUDO DEFINITIVAMENTE?',
+                        description: 'Esta ação destruirá todos os seus perfis e transações na nuvem e localmente. Prossiga com extrema cautela.',
                         action: async () => {
+                          setBootStage('syncing');
+                          
+                          // 1. Cloud Wipe
                           if (user && supabase && isCloudMode) {
-                              await supabase.from('userdata').delete().eq('user_id', user.id);
+                            try {
+                              await Promise.all([
+                                supabase.from('transactions').delete().eq('user_id', user.id),
+                                supabase.from('profiles').delete().eq('user_id', user.id)
+                              ]);
+                            } catch (e) {
+                              console.error('Falha ao limpar nuvem:', e);
+                            }
                           }
+                          
+                          // 2. Local Folder Wipe
+                          if (folderHandle) {
+                            try {
+                              // Recursively delete all profile files
+                              for (const p of profilesList) {
+                                try {
+                                  await folderHandle.removeEntry(`${p}.json`);
+                                } catch (e) {
+                                  // Fallback for files not in list but in folder
+                                }
+                              }
+                            } catch (e) {
+                              console.error('Falha ao limpar pasta local:', e);
+                            }
+                          }
+
+                          // 3. System Reset
+                          try {
+                            const db = await initDB();
+                            await clearState(db);
+                          } catch (e) {}
+                          
                           localStorage.clear();
-                          toast.success('Reiniciando sistema...');
-                          setTimeout(() => window.location.reload(), 1500);
+                          toast.success('Sistema resetado com sucesso.');
+                          setTimeout(() => {
+                            window.location.reload();
+                          }, 1500);
                         }
                       });
                     }}

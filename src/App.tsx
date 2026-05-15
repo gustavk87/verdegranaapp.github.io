@@ -70,9 +70,17 @@ import 'hammerjs';
 const SUPABASE_URL = 'https://cigrmsoprnefiwbenbuv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpZ3Jtc29wcm5lZml3YmVuYnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4MTM0ODIsImV4cCI6MjA5NDM4OTQ4Mn0.C_njZ0VD_qwKnGGgEcaBUy9Qm0xXbtia1inucnmqckg';
 
-// Using global supabase object from CDN
-// @ts-ignore
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Using global supabase object from CDN safely
+let supabase: any = null;
+try {
+  // @ts-ignore
+  if (window.supabase) {
+    // @ts-ignore
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+} catch (e) {
+  console.error("Erro ao inicializar Supabase:", e);
+}
 
 ChartJS.register(
   CategoryScale,
@@ -692,13 +700,26 @@ export default function App() {
   }>({ open: false, title: '', description: '', action: () => {} });
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     const saved = localStorage.getItem('verdegrana_data');
-    return saved ? JSON.parse(saved) : [];
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   });
   const [history, setHistory] = useState<Transaction[][]>([]);
   const [historyPointer, setHistoryPointer] = useState(-1);
   const [categories, setCategories] = useState<Category[]>(() => {
     const saved = localStorage.getItem('verdegrana_categories');
-    return saved ? JSON.parse(saved) : DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }));
+    const defaultCats = DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }));
+    if (!saved) return defaultCats;
+    try {
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : defaultCats;
+    } catch {
+      return defaultCats;
+    }
   });
   
   // Edge-Swipe Logic
@@ -1107,8 +1128,12 @@ export default function App() {
         const content = event.target?.result as string;
         const data = JSON.parse(content);
         
-        if (data.transactions) setTransactions(data.transactions);
-        if (data.categories) setCategories(data.categories);
+        if (data.transactions && Array.isArray(data.transactions)) {
+          setTransactions(data.transactions);
+        }
+        if (data.categories && Array.isArray(data.categories)) {
+          setCategories(data.categories);
+        }
         
         setIsCloudMode(false);
         setIsTrial(false);
@@ -1136,25 +1161,34 @@ export default function App() {
   // --- Initial Boot & Persistence ---
   useEffect(() => {
     const boot = async () => {
+      // Immediate hydration is handled by useState initiators.
+      
       // Supabase listener
       if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          setUser(session.user);
-          setIsCloudMode(true);
-          await fetchCloudData(session.user.id);
-          setBootStage('ready'); // Auto-login skip to dashboard
-        }
-        
-        supabase.auth.onAuthStateChange((_event, session) => {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
           if (session?.user) {
             setUser(session.user);
             setIsCloudMode(true);
-          } else {
-            setUser(null);
-            setIsCloudMode(false);
+            setSyncStatus('saving');
+            await fetchCloudData(session.user.id);
+            setSyncStatus('synced');
+            setBootStage('ready'); // Auto-login skip to dashboard
           }
-        });
+          
+          supabase.auth.onAuthStateChange((_event: any, session: any) => {
+            if (session?.user) {
+              setUser(session.user);
+              setIsCloudMode(true);
+            } else {
+              setUser(null);
+              setIsCloudMode(false);
+              setSyncStatus('idle');
+            }
+          });
+        } catch (e) {
+          console.error("Erro no boot de autenticação:", e);
+        }
       }
     };
     boot();
@@ -1490,8 +1524,11 @@ export default function App() {
                   </button>
                   <div className="h-px bg-white/5 w-full my-2" />
                   <button 
-                    onClick={() => localFileRef.current?.click()}
-                    className="flex items-center justify-center gap-2 text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-emerald-400"
+                    onClick={() => {
+                       const el = document.getElementById('localFileInput');
+                       if (el) el.click();
+                    }}
+                    className="flex items-center justify-center gap-2 text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-white transition-colors"
                   >
                     <Folder className="w-3 h-3" /> Carregar Ficheiro Local (.json)
                   </button>
@@ -1562,7 +1599,7 @@ export default function App() {
         ref={localFileRef} 
         onChange={handleLocalFileLoad} 
         accept=".json" 
-        className="hidden" 
+        style={{ display: 'none' }}
       />
 
       {/* CONTENT AREA */}
@@ -1638,21 +1675,26 @@ export default function App() {
                   </div>
                 ) : null}
                 
-                {user && isCloudMode && (
-                  <div className={cn(
-                    "flex items-center gap-1 text-[10px] font-bold ml-2 transition-all",
-                    syncStatus === 'saving' ? "text-amber-500 animate-pulse" : 
-                    syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
-                  )}>
-                    {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
-                    <span className={cn(
-                       "font-bold",
-                       syncStatus === 'synced' ? "text-emerald-500" : ""
+                {/* Status Indicator */}
+                <div className="flex items-center gap-1 text-[10px] font-bold ml-2 transition-all">
+                  {isCloudMode && user ? (
+                    <div className={cn(
+                      "flex items-center gap-1",
+                      syncStatus === 'saving' ? "text-amber-500 animate-pulse" : 
+                      syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
                     )}>
-                      {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'ERRO DE CONEXÃO'}
-                    </span>
-                  </div>
-                )}
+                      {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
+                      <span>
+                        {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'ERRO DE CONEXÃO'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-slate-400">
+                      <FolderSync className="w-3 h-3" />
+                      <span>MODO LOCAL</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

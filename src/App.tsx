@@ -872,38 +872,50 @@ export default function App() {
         ? await supabase.auth.signInWithPassword({ email: authEmail, password: authPass })
         : await supabase.auth.signUp({ email: authEmail, password: authPass });
 
-      if (error) throw error;
+      if (error) {
+        if (mode === 'login') {
+          alert("Erro ao entrar. Verifique seu email e senha. (" + error.message + ")");
+        } else {
+          alert("Erro ao criar conta: " + error.message);
+        }
+        throw error;
+      }
+
       if (data.user) {
         setUser(data.user);
-        toast.success(mode === 'login' ? 'BEM-VINDO DE VOLTA!' : 'CONTA CRIADA COM SUCESSO!');
-        
-        // Merge logic
-        if (transactions.length > 0 && isTrial) {
-          setConfirmModal({
-            open: true,
-            title: "Mesclar Dados?",
-            description: "Detectamos dados no modo Trial. Deseja mesclar esses dados com sua conta na nuvem?",
-            action: async () => {
-              const cloudData = await fetchCloudData(data.user.id);
-              const mergedTransactions = [...transactions];
-              cloudData.transactions.forEach((t: any) => {
-                if (!mergedTransactions.some(mt => mt.id === t.id)) {
-                  mergedTransactions.push(t);
-                }
-              });
-              setTransactions(mergedTransactions);
-              setIsTrial(false);
-              setBootStage('welcome');
-            }
-          });
+        if (mode === 'signup') {
+          alert("Conta criada com sucesso! Agora você já pode clicar em 'Entrar'. (Se o Supabase exigir, verifique a caixa de entrada do seu email).");
         } else {
-          await fetchCloudData(data.user.id);
-          setIsTrial(false);
-          setBootStage('welcome');
+          toast.success('BEM-VINDO DE VOLTA!');
+          
+          // Merge logic
+          if (transactions.length > 0 && isTrial) {
+            setConfirmModal({
+              open: true,
+              title: "Mesclar Dados?",
+              description: "Detectamos dados no modo Trial. Deseja mesclar esses dados com sua conta na nuvem?",
+              action: async () => {
+                const cloudData = await fetchCloudData(data.user.id);
+                const mergedTransactions = [...transactions];
+                cloudData.transactions.forEach((t: any) => {
+                  if (!mergedTransactions.some(mt => mt.id === t.id)) {
+                    mergedTransactions.push(t);
+                  }
+                });
+                setTransactions(mergedTransactions);
+                setIsTrial(false);
+                setBootStage('welcome');
+              }
+            });
+          } else {
+            await fetchCloudData(data.user.id);
+            setIsTrial(false);
+            setBootStage('welcome');
+          }
         }
       }
     } catch (e: any) {
-      toast.error('Erro de autenticação: ' + e.message);
+      console.error('Erro de autenticação:', e);
     } finally {
       setIsAuthLoading(false);
     }
@@ -972,6 +984,7 @@ export default function App() {
         if (session?.user) {
           setUser(session.user);
           await fetchCloudData(session.user.id);
+          setBootStage('ready'); // Auto-login skip to dashboard
         }
         
         supabase.auth.onAuthStateChange((_event, session) => {

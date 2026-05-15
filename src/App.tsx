@@ -66,12 +66,10 @@ import 'hammerjs';
 
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const SUPABASE_URL = 'https://cigrmsoprnefiwbenbuv.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpZ3Jtc29wcm5lZml3YmVuYnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4MTM0ODIsImV4cCI6MjA5NDM4OTQ4Mn0.C_njZ0VD_qwKnGGgEcaBUy9Qm0xXbtia1inucnmqckg';
 
-const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) 
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-  : null;
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 ChartJS.register(
   CategoryScale,
@@ -669,7 +667,9 @@ type BootStage = 'splash' | 'presentation' | 'auth' | 'welcome' | 'ready';
 export default function App() {
   const [bootStage, setBootStage] = useState<BootStage>('splash');
   const [user, setUser] = useState<any>(null);
+  const [isCloudMode, setIsCloudMode] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const localFileRef = useRef<HTMLInputElement>(null);
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [authEmail, setAuthEmail] = useState('');
   const [authPass, setAuthPass] = useState('');
@@ -883,6 +883,7 @@ export default function App() {
 
       if (data.user) {
         setUser(data.user);
+        setIsCloudMode(true);
         if (mode === 'signup') {
           alert("Conta criada com sucesso! Agora você já pode clicar em 'Entrar'. (Se o Supabase exigir, verifique a caixa de entrada do seu email).");
         } else {
@@ -968,11 +969,48 @@ export default function App() {
     if (!supabase) return;
     await supabase.auth.signOut();
     setUser(null);
+    setIsCloudMode(false);
     setTransactions([]);
     setCategories(DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
     localStorage.clear();
     setBootStage('auth');
     toast.info('Sessão encerrada.');
+  };
+
+  const handleLocalFileLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const data = JSON.parse(content);
+        
+        if (data.transactions) setTransactions(data.transactions);
+        if (data.categories) setCategories(data.categories);
+        
+        setIsCloudMode(false);
+        setIsTrial(false);
+        setIsDemoMode(false);
+        setBootStage('welcome');
+        toast.success('Arquivo local carregado!');
+      } catch (err) {
+        toast.error('Erro ao ler arquivo. Formato inválido.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleLocalExport = () => {
+    const data = JSON.stringify({ transactions, categories }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `verdegrana_backup.json`;
+    link.click();
+    toast.success('Backup local exportado!');
   };
 
   // --- Initial Boot & Persistence ---
@@ -983,6 +1021,7 @@ export default function App() {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
           setUser(session.user);
+          setIsCloudMode(true);
           await fetchCloudData(session.user.id);
           setBootStage('ready'); // Auto-login skip to dashboard
         }
@@ -990,8 +1029,10 @@ export default function App() {
         supabase.auth.onAuthStateChange((_event, session) => {
           if (session?.user) {
             setUser(session.user);
+            setIsCloudMode(true);
           } else {
             setUser(null);
+            setIsCloudMode(false);
           }
         });
       }
@@ -1001,7 +1042,7 @@ export default function App() {
 
   // Debounced Cloud Sync
   useEffect(() => {
-    if (!user?.id || bootStage !== 'ready' || isDemoMode) return;
+    if (!user?.id || !isCloudMode || bootStage !== 'ready' || isDemoMode) return;
 
     const timeout = setTimeout(async () => {
       await saveCloudData(user.id, transactions, categories);
@@ -1203,17 +1244,6 @@ export default function App() {
     return transactions.filter(t => t.date === date);
   }, [transactions, selectedPeriod]);
 
-  const exportData = () => {
-    const data = JSON.stringify({ transactions, categories }, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `vgrana_backup.json`;
-    link.click();
-    toast.success('Backup exportado!');
-  };
-
   // --- UI Renders ---
 
   // Splash Screen
@@ -1341,6 +1371,13 @@ export default function App() {
                   >
                     Continuar como Visitante (Modo Trial)
                   </button>
+                  <div className="h-px bg-white/5 w-full my-2" />
+                  <button 
+                    onClick={() => localFileRef.current?.click()}
+                    className="flex items-center justify-center gap-2 text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-emerald-400"
+                  >
+                    <Folder className="w-3 h-3" /> Carregar Ficheiro Local (.json)
+                  </button>
                </div>
             </div>
           </motion.div>
@@ -1355,7 +1392,7 @@ export default function App() {
         <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full glass p-10 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-8">
           <div className="space-y-4">
             <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20">
-               {isTrial ? <Play className="w-12 h-12" /> : <UserCheck className="w-12 h-12" />}
+               {isTrial ? <Play className="w-12 h-12" /> : (isCloudMode ? <UserCheck className="w-12 h-12" /> : <Folder className="w-12 h-12" />)}
             </div>
             <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">
               {isTrial ? 'Seja Bem-vindo!' : 'TUDO PRONTO!'}
@@ -1363,16 +1400,16 @@ export default function App() {
             <p className="text-slate-400 text-sm leading-relaxed px-4">
               {isTrial 
                 ? 'Você está em modo de teste. Seus dados não serão salvos permanentemente.' 
-                : `Conectado como ${user?.email}. Seus dados estão sendo guardados na nuvem.`}
+                : (isCloudMode ? `Conectado como ${user?.email}. Seus dados estão sendo guardados na nuvem.` : 'Modo Local Ativo. Seus dados estão salvos apenas neste navegador.')}
             </p>
           </div>
 
-          {!isTrial && user && (
+          {!isTrial && (
             <div className="bg-emerald-500/5 p-5 rounded-3xl border border-emerald-500/10 text-left flex items-center gap-4">
-               <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-500"><Cloud className="w-5 h-5" /></div>
+               <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-500">{isCloudMode ? <Cloud className="w-5 h-5" /> : <ShieldCheck className="w-5 h-5" />}</div>
                <div className="flex-1 min-w-0">
-                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Sincronização em Nuvem</p>
-                  <p className="text-xs text-slate-400 truncate font-mono">Status: Ativo & Seguro</p>
+                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">{isCloudMode ? 'Sincronização em Nuvem' : 'Privacidade Local'}</p>
+                  <p className="text-xs text-slate-400 truncate font-mono">Status: {isCloudMode ? 'Ativo & Seguro' : '100% Offline'}</p>
                </div>
             </div>
           )}
@@ -1402,6 +1439,13 @@ export default function App() {
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-200 flex flex-col select-none touch-none">
       <Toaster position="top-right" theme="dark" richColors />
+      <input 
+        type="file" 
+        ref={localFileRef} 
+        onChange={handleLocalFileLoad} 
+        accept=".json" 
+        className="hidden" 
+      />
 
       {/* CONTENT AREA */}
       <main 
@@ -2132,26 +2176,30 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
               <motion.div key="set" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
                 <Card className="p-10 flex flex-col gap-6">
                   <div className="flex items-center gap-4">
-                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl"><Cloud /></div>
-                    <h3 className="text-xl font-bold text-white">Sincronização na Nuvem</h3>
+                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl">{isCloudMode ? <Cloud /> : <Folder />}</div>
+                    <h3 className="text-xl font-bold text-white">{isCloudMode ? 'Sincronização na Nuvem' : 'Modo Ficheiro Local'}</h3>
                   </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">Seus dados estão protegidos e sincronizados em tempo real com sua conta no Supabase. Isso garante acesso multiplataforma e persistência total.</p>
+                  <p className="text-slate-400 text-sm leading-relaxed">
+                    {isCloudMode 
+                      ? 'Seus dados estão protegidos e sincronizados em tempo real com sua conta no Supabase. Isso garante acesso multiplataforma.' 
+                      : 'Seus dados estão sendo gerenciados localmente. Lembre-se de baixar backups regulares (.json) para evitar perdas se limpar o navegador.'}
+                  </p>
                   <div className="mt-auto bg-emerald-500/5 p-4 rounded-2xl border border-emerald-500/10">
-                     <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Status da Conta</p>
-                     <p className="text-sm text-slate-300 font-bold truncate">{user ? `Conectado como ${user.email}` : 'Visitante'}</p>
+                     <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Status do Armazenamento</p>
+                     <p className="text-sm text-slate-300 font-bold truncate">{isCloudMode ? `Nuvem: ${user?.email}` : 'Ficheiro Local (Offline)'}</p>
                   </div>
                   <button 
                     onClick={() => {
                       setConfirmModal({
                         open: true,
-                        title: 'Baixar Backup Local?',
+                        title: 'Exportar Backup Local?',
                         description: 'Um arquivo .json será baixado com todos os seus registros atuais.',
-                        action: exportData
+                        action: handleLocalExport
                       });
                     }}
                     className="flex items-center justify-center gap-3 py-4 bg-emerald-600/10 border border-emerald-500/30 rounded-xl text-emerald-400 font-bold hover:bg-emerald-600 hover:text-white transition-all text-sm"
                   >
-                    <Download className="w-4 h-4" /> Baixar Backup Local (.json)
+                    <Download className="w-4 h-4" /> Exportar Backup (.json)
                   </button>
                 </Card>
 
@@ -2205,7 +2253,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                               categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }))
                             };
                             
-                            if (user && supabase) {
+                            if (user && supabase && isCloudMode) {
                               try {
                                 await supabase
                                   .from('userdata')

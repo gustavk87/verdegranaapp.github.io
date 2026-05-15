@@ -824,7 +824,7 @@ export default function App() {
   // Persistent Profiles List
   const [profilesList, setProfilesList] = useState<string[]>(() => {
     const saved = localStorage.getItem('verdegrana_profiles_list');
-    return saved ? JSON.parse(saved) : ['Principal'];
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [uiScale, setUiScale] = useState<number>(() => {
@@ -860,37 +860,50 @@ export default function App() {
     } catch (e) {
       console.error("Erro ao escanear pasta:", e);
     }
-    const finalProfiles = profiles.length > 0 ? profiles : ['Principal'];
+    // Filter for uniqueness
+    const finalProfiles = Array.from(new Set(profiles));
+    if (finalProfiles.length === 0) {
+      // If zero profiles exist, we should trigger onboarding
+      setProfilesList([]);
+      return [];
+    }
     setProfilesList(finalProfiles);
     return finalProfiles;
   };
 
   const syncProfilesFromCloud = async (userId: string) => {
-    if (!supabase) return ['Principal'];
+    if (!supabase) return [];
     try {
       const { data, error } = await supabase.from('profiles').select('name').eq('user_id', userId);
       if (error) throw error;
       
-      const profiles = data.map((p: any) => p.name);
-      if (profiles.length === 0 || !profiles.includes('Principal')) {
-        const { error: insError } = await supabase.from('profiles').insert([{ name: 'Principal', user_id: userId }]);
-        if (!insError && !profiles.includes('Principal')) profiles.push('Principal');
-      }
+      // UNIQUE PROFILE DEDUPLICATION
+      const profiles = Array.from(new Set(data.map((p: any) => p.name)));
+      
       setProfilesList(profiles);
       return profiles;
     } catch (e) {
       console.error("Erro ao sincronizar perfis cloud:", e);
-      return ['Principal'];
+      return [];
     }
   };
 
   const loadProfileData = async (profileName: string) => {
     setSyncStatus('saving');
+    // AGGRESSIVE STATE ISOLATION: Reset before fetching
+    setTransactions([]);
+    setHistory([]);
+    setHistoryPointer(-1);
+    
     try {
       if (isCloudMode && user && supabase) {
-        const { data, error } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('profile_name', profileName);
+        const { data, error } = await supabase.from('transactions')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('profile_name', profileName); // Aggressive filtering
+        
         if (error) throw error;
-        setTransactions(data.map((t: any) => ({
+        const mapped = data.map((t: any) => ({
           id: t.id,
           date: t.date,
           desc: t.description,
@@ -898,16 +911,23 @@ export default function App() {
           category: t.category,
           type: t.type,
           profile_name: t.profile_name
-        })));
+        }));
+        setTransactions(mapped);
+        setHistory([mapped]);
+        setHistoryPointer(0);
       } else if (folderHandle) {
         try {
           const fileHandle = await folderHandle.getFileHandle(`${profileName}.json`);
           const file = await fileHandle.getFile();
           const content = await file.text();
           const data = JSON.parse(content);
-          if (data.transactions) setTransactions(data.transactions);
+          if (data.transactions) {
+            setTransactions(data.transactions);
+            setHistory([data.transactions]);
+            setHistoryPointer(0);
+          }
         } catch (e) {
-          setTransactions([]); // New profile or file missing
+          setTransactions([]); 
         }
       }
       setSyncStatus('synced');
@@ -943,11 +963,10 @@ export default function App() {
       setIsCloudMode(false);
       setIsTrial(false);
       
-      if (profiles.length > 0) {
+      if (profiles && profiles.length > 0) {
         setBootStage('profile_select');
       } else {
-        setActiveProfile('Principal');
-        setBootStage('ready');
+        setBootStage('welcome');
       }
       
       toast.success('Pasta vinculada com sucesso!');
@@ -1101,8 +1120,13 @@ export default function App() {
         } else {
           toast.success('BEM-VINDO DE VOLTA!');
           setIsTrial(false);
-          await syncProfilesFromCloud(data.user.id);
-          setBootStage('profile_select');
+          const profiles = await syncProfilesFromCloud(data.user.id);
+          // ONBOARDING GATEWAY
+          if (!profiles || profiles.length === 0) {
+            setBootStage('welcome'); // Overlay to create first profile
+          } else {
+            setBootStage('profile_select');
+          }
         }
       }
     } catch (e: any) {
@@ -1497,17 +1521,22 @@ export default function App() {
             setIsCloudMode(true);
             
             // MODULE 3: Sincronização resiliente com timeout
+            let profiles: string[] = [];
             try {
-              await Promise.race([
+              profiles = await Promise.race([
                 syncProfilesFromCloud(session.user.id),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-              ]);
+              ]) as string[];
             } catch (e) {
               console.warn("Cloud sync timed out, using fallback.");
               toast.info('Sincronização lenta... carregando dados locais.');
             }
             
-            setBootStage('profile_select');
+            if (!profiles || profiles.length === 0) {
+              setBootStage('welcome');
+            } else {
+              setBootStage('profile_select');
+            }
             return;
           }
         }
@@ -1893,7 +1922,12 @@ export default function App() {
             </button>
 
             <button 
-              onClick={() => { setIsTrial(true); setTransactions([]); setBootStage('profile_select'); }}
+              onClick={() => { 
+                setIsTrial(true); 
+                setTransactions([]); 
+                if (profilesList.length === 0) setBootStage('welcome');
+                else setBootStage('profile_select'); 
+              }}
               className="text-[10px] text-slate-600 hover:text-slate-400 font-black uppercase tracking-[0.3em] transition-colors mt-2"
             >
               Continuar como Visitante (Modo Trial)
@@ -2020,7 +2054,13 @@ export default function App() {
                   </button>
                   <div className="h-px bg-white/5 w-full my-2" />
                   <button 
-                    onClick={() => { setIsTrial(true); setIsDemoMode(true); setTransactions([]); setBootStage('profile_select'); }}
+                    onClick={() => { 
+                      setIsTrial(true); 
+                      setIsDemoMode(true); 
+                      setTransactions([]); 
+                      if (profilesList.length === 0) setBootStage('welcome');
+                      else setBootStage('profile_select'); 
+                    }}
                     className="text-[10px] text-slate-600 font-black uppercase tracking-[0.3em] hover:text-slate-400"
                   >
                     Continuar como Visitante (Modo Trial)
@@ -2117,46 +2157,77 @@ export default function App() {
   if (bootStage === 'welcome') {
     return (
       <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6 sm:p-0 overflow-y-auto">
-        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full glass p-10 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-8">
-          <div className="space-y-4">
-            <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20">
-               {isTrial ? <Play className="w-12 h-12" /> : (isCloudMode ? <UserCheck className="w-12 h-12" /> : <Folder className="w-12 h-12" />)}
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }} 
+          animate={{ opacity: 1, scale: 1 }} 
+          className="max-w-md w-full glass p-12 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-10"
+        >
+          <div className="space-y-6">
+            <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20 shadow-2xl shadow-emerald-500/20">
+               <Leaf className="w-12 h-12" />
             </div>
-            <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">
-              {isTrial ? 'Seja Bem-vindo!' : 'TUDO PRONTO!'}
-            </h1>
-            <p className="text-slate-400 text-sm leading-relaxed px-4">
-              {isTrial 
-                ? 'Você está em modo de teste. Seus dados não serão salvos permanentemente.' 
-                : (isCloudMode ? `Conectado como ${user?.email}. Seus dados estão sendo guardados na nuvem.` : 'Modo Local Ativo. Seus dados estão salvos apenas neste navegador.')}
-            </p>
+            <div className="space-y-2">
+              <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-tight">
+                Boas-vindas ao VerdeGrana!
+              </h1>
+              <p className="text-slate-400 text-sm leading-relaxed px-4">
+                Sua privacidade é nossa prioridade. Para começar, vamos criar seu primeiro perfil de orçamento.
+              </p>
+            </div>
           </div>
 
-          {!isTrial && (
-            <div className="bg-emerald-500/5 p-5 rounded-3xl border border-emerald-500/10 text-left flex items-center gap-4">
-               <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-500">{isCloudMode ? <Cloud className="w-5 h-5" /> : <ShieldCheck className="w-5 h-5" />}</div>
-               <div className="flex-1 min-w-0">
-                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">{isCloudMode ? 'Sincronização em Nuvem' : 'Privacidade Local'}</p>
-                  <p className="text-xs text-slate-400 truncate font-mono">Status: {isCloudMode ? 'Ativo & Seguro' : '100% Offline'}</p>
-               </div>
+          <div className="space-y-6">
+            <div className="space-y-2 text-left">
+              <label className="text-[10px] uppercase font-black text-slate-600 ml-4 tracking-widest">Nome do Perfil</label>
+              <input 
+                id="first-profile-name"
+                placeholder="Ex: Pessoal, Família, Empresa..."
+                className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl px-6 text-white outline-none focus:border-emerald-500 transition-all font-bold"
+              />
             </div>
-          )}
 
-          <div className="space-y-4">
-             <button 
-              onClick={() => setBootStage('ready')}
+            <button 
+              onClick={async () => {
+                const input = document.getElementById('first-profile-name') as HTMLInputElement;
+                const name = input.value?.trim();
+                if (!name) {
+                  toast.error("Por favor, dê um nome ao seu perfil.");
+                  return;
+                }
+
+                setIsAuthLoading(true);
+                try {
+                  if (isCloudMode && user && supabase) {
+                    await supabase.from('profiles').insert([{ name, user_id: user.id }]);
+                  } else if (folderHandle) {
+                    const fileHandle = await folderHandle.getFileHandle(`${name}.json`, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(JSON.stringify({ transactions: [], categories }, null, 2));
+                    await writable.close();
+                  }
+
+                  setProfilesList([name]);
+                  setActiveProfile(name);
+                  setTransactions([]);
+                  setBootStage('ready');
+                  toast.success(`Bem-vindo, ${name}! Seu perfil foi criado.`);
+                } catch (e) {
+                   toast.error("Erro ao criar perfil inicial.");
+                } finally {
+                  setIsAuthLoading(false);
+                }
+              }}
+              disabled={isAuthLoading}
               className="w-full py-6 bg-emerald-600 rounded-3xl font-black text-white hover:bg-emerald-500 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-xl shadow-emerald-600/20"
-             >
-               {isTrial ? 'Começar Agora' : 'ACESSAR MEU PAINEL'} <ArrowRight className="w-5 h-5" />
-             </button>
-             {!isTrial && (
-                <button 
-                  onClick={handleLogout}
-                  className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-slate-500 text-xs uppercase hover:bg-white/10 transition-all active:scale-95"
-                >
-                  CONECTAR COM OUTRA CONTA
-                </button>
-             )}
+            >
+              {isAuthLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'CRIAR MEU PRIMEIRO PERFIL'} <ArrowRight className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={handleLogout}
+              className="text-[10px] text-slate-600 font-bold uppercase tracking-widest hover:text-slate-400 transition-all"
+            >
+               SAIR DA CONTA
+            </button>
           </div>
         </motion.div>
       </div>

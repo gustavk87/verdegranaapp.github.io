@@ -64,6 +64,15 @@ import { Bar as ChartBar, Line as ChartLine, Doughnut } from 'react-chartjs-2';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import 'hammerjs';
 
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) 
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -573,10 +582,10 @@ const CategoryDonutSection = ({
   title
 }: { 
   data: any[], 
-  colorMode: 'unique' | 'flow',
-  setColorMode?: (m: 'unique' | 'flow') => void,
-  viewMode: 'tudo' | 'receitas' | 'despesas',
-  setViewMode?: (m: 'tudo' | 'receitas' | 'despesas') => void,
+  colorMode: 'unique' | 'flow', 
+  setColorMode?: (m: 'unique' | 'flow') => void, 
+  viewMode: 'tudo' | 'receitas' | 'despesas', 
+  setViewMode?: (m: 'tudo' | 'receitas' | 'despesas') => void, 
   title: string
 }) => {
   try {
@@ -655,12 +664,15 @@ const CategoryDonutSection = ({
   }
 };
 
-let dbInstance: any = null;
-
-type BootStage = 'splash' | 'presentation' | 'source' | 'security' | 'welcome' | 'ready';
+type BootStage = 'splash' | 'presentation' | 'auth' | 'welcome' | 'ready';
 
 export default function App() {
   const [bootStage, setBootStage] = useState<BootStage>('splash');
+  const [user, setUser] = useState<any>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPass, setAuthPass] = useState('');
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [isTrial, setIsTrial] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('reports');
@@ -741,13 +753,7 @@ export default function App() {
     touchStart.current = null;
   };
   
-  // Persistence Handles
-  const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'synced' | 'saving' | 'error'>('idle');
-  const [isDirty, setIsDirty] = useState(false);
-  const [isFolderPermissionMissing, setIsFolderPermissionMissing] = useState(false);
-  const [isDashboardRevealed, setIsDashboardRevealed] = useState(false);
-  const isFSApiSupported = 'showDirectoryPicker' in window;
 
   // UI States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -774,6 +780,7 @@ export default function App() {
   const [selectedPeriod, setSelectedPeriod] = useState<string | null>(null);
   const [quickAddDate, setQuickAddDate] = useState<string | null>(null);
   const [isChartReady, setIsChartReady] = useState(false);
+  const [isDashboardRevealed, setIsDashboardRevealed] = useState(false);
 
   const [uiScale, setUiScale] = useState<number>(() => {
     const saved = localStorage.getItem('verdegrana_ui_scale');
@@ -849,240 +856,148 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  const handlePresentationTouch = () => {
-    if (dirHandle) {
-      setIsFolderPermissionMissing(true);
+   const handlePresentationTouch = () => {
+    if (user?.id) {
       setBootStage('welcome');
     } else {
-      setBootStage('source');
+      setBootStage('auth');
     }
   };
 
-  const handleSourceSelect = (trial: boolean) => {
-    if (trial) {
-      setIsDemoMode(true);
-      setIsTrial(true);
-      setBootStage('welcome');
-    } else {
-      if (!isFSApiSupported) {
-        alert("Seu navegador atual não suporta a sincronização de pastas locais (File System Access API). Por favor, use o Chrome em computadores ou opte pelo Modo Trial.");
-        return;
-      }
-      setBootStage('security');
-    }
-  };
-
-  // --- Persistence Logic (File System) ---
-  const FILE_NAME = 'verdegrana_db.json';
-
-  const readFromFile = async (handle: FileSystemDirectoryHandle) => {
+  const handleAuth = async (mode: 'login' | 'signup') => {
+    if (!supabase) return;
+    setIsAuthLoading(true);
     try {
-      // @ts-ignore
-      const permission = await handle.queryPermission({ mode: 'readwrite' });
-      if (permission !== 'granted') {
-        setIsFolderPermissionMissing(true);
-        return false;
-      }
+      const { data, error } = mode === 'login' 
+        ? await supabase.auth.signInWithPassword({ email: authEmail, password: authPass })
+        : await supabase.auth.signUp({ email: authEmail, password: authPass });
 
-      try {
-        // SUCCESS PATH: File Exists
-        const fileHandle = await handle.getFileHandle(FILE_NAME, { create: false });
-        const file = await fileHandle.getFile();
-        const text = await file.text();
+      if (error) throw error;
+      if (data.user) {
+        setUser(data.user);
+        toast.success(mode === 'login' ? 'BEM-VINDO DE VOLTA!' : 'CONTA CRIADA COM SUCESSO!');
         
-        if (text) {
-          const data = JSON.parse(text);
-          
-          // Elastic Schema: Discover categories from transactions if they aren't in the registry
-          const existingCategories = data.categories || DEFAULT_CATEGORIES.map((c: string) => ({ id: c.toLowerCase(), name: c }));
-          const discoveredCategories = [...existingCategories];
-          
-          if (data.transactions) {
-            data.transactions.forEach((t: Transaction) => {
-              const exists = discoveredCategories.some(c => c.name.toLowerCase() === t.category.toLowerCase());
-              if (!exists) {
-                discoveredCategories.push({
-                  id: t.category.toLowerCase().replace(/\s+/g, '-'),
-                  name: t.category,
-                  color: `#${Math.floor(Math.random()*16777215).toString(16)}`
-                });
-              }
-            });
-            setTransactions(data.transactions);
-          }
-          
-          setCategories(discoveredCategories);
+        // Merge logic
+        if (transactions.length > 0 && isTrial) {
+          setConfirmModal({
+            open: true,
+            title: "Mesclar Dados?",
+            description: "Detectamos dados no modo Trial. Deseja mesclar esses dados com sua conta na nuvem?",
+            action: async () => {
+              const cloudData = await fetchCloudData(data.user.id);
+              const mergedTransactions = [...transactions];
+              cloudData.transactions.forEach((t: any) => {
+                if (!mergedTransactions.some(mt => mt.id === t.id)) {
+                  mergedTransactions.push(t);
+                }
+              });
+              setTransactions(mergedTransactions);
+              setIsTrial(false);
+              setBootStage('welcome');
+            }
+          });
+        } else {
+          await fetchCloudData(data.user.id);
+          setIsTrial(false);
+          setBootStage('welcome');
         }
-        toast.success('BEM-VINDO DE VOLTA!');
-      } catch (e) {
-        // FAILSAFE PATH: File Missing / Empty Folder
-        console.warn("Base de dados não encontrada, criando nova estrutura...");
-        const skeleton = { 
-          transactions: [], 
-          categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })) 
-        };
-        await writeToFile(handle, skeleton);
-        setTransactions([]);
-        setCategories(skeleton.categories);
-        toast.success(`SEJA BEM-VINDO! Nova base de dados configurada.`);
       }
-      
-      setIsFolderPermissionMissing(false);
-      setSyncStatus('synced');
-      // CRITICAL: Force transition to Dash ONLY AFTER SUCCESS
-      setBootStage('ready');
-      return true;
     } catch (e: any) {
-      console.error("ERRO CRÍTICO NA LEITURA DO ARQUIVO:", e);
-      setSyncStatus('error');
-      alert("Erro ao ler os dados da pasta. O arquivo pode estar corrompido. Código: " + e.message);
-      return false;
+      toast.error('Erro de autenticação: ' + e.message);
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
-  const writeToFile = async (handle: FileSystemDirectoryHandle, data: any) => {
+  const fetchCloudData = async (userId: string) => {
+    if (!supabase) return { transactions: [], categories: [] };
+    try {
+      const { data, error } = await supabase
+        .from('userdata')
+        .select('data')
+        .eq('user_id', userId)
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      if (data?.data) {
+        setTransactions(data.data.transactions || []);
+        setCategories(data.data.categories || DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
+        return data.data;
+      }
+      return { transactions: [], categories: [] };
+    } catch (e: any) {
+      console.error("Erro ao buscar dados na nuvem:", e);
+      return { transactions: [], categories: [] };
+    }
+  };
+
+  const saveCloudData = async (userId: string, txs: Transaction[], cats: Category[]) => {
+    if (!supabase) return;
     try {
       setSyncStatus('saving');
-      const fileHandle = await handle.getFileHandle(FILE_NAME, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(JSON.stringify(data, null, 2));
-      await writable.close();
+      const { error } = await supabase
+        .from('userdata')
+        .upsert({ 
+          user_id: userId, 
+          data: { transactions: txs, categories: cats },
+          updated_at: new Date().toISOString()
+        });
+      
+      if (error) throw error;
       setSyncStatus('synced');
-      setIsDirty(false);
-    } catch (e) {
-      console.error('Falha ao gravar no arquivo:', e);
+    } catch (e: any) {
+      console.error("Erro ao salvar na nuvem:", e);
       setSyncStatus('error');
-      setIsDirty(true);
     }
+  };
+
+  const handleLogout = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setUser(null);
+    setTransactions([]);
+    setCategories(DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
+    localStorage.clear();
+    setBootStage('auth');
+    toast.info('Sessão encerrada.');
   };
 
   // --- Initial Boot & Persistence ---
   useEffect(() => {
     const boot = async () => {
-      // Small delay for IDB init
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      dbInstance = await initDB();
-      const savedState = await getState(dbInstance);
-      
-      if (savedState) {
-        if (savedState.transactions) setTransactions(savedState.transactions);
-        if (savedState.categories) setCategories(savedState.categories);
-        
-        if (savedState.workspaceHandle) {
-          setDirHandle(savedState.workspaceHandle);
-          // If we have a handle, we still go to welcome but we wait for splash transition
+      // Supabase listener
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setUser(session.user);
+          await fetchCloudData(session.user.id);
         }
+        
+        supabase.auth.onAuthStateChange((_event, session) => {
+          if (session?.user) {
+            setUser(session.user);
+          } else {
+            setUser(null);
+          }
+        });
       }
     };
     boot();
   }, []);
 
-  // Sync state to IDB (Instant)
+  // Debounced Cloud Sync
   useEffect(() => {
-    if (dbInstance && bootStage === 'ready' && !isDemoMode) {
-      const stateToSave = { transactions, categories, workspaceHandle: dirHandle || undefined };
-      saveState(dbInstance, stateToSave);
-      setIsDirty(true);
-    }
-  }, [transactions, categories, dirHandle, bootStage, isDemoMode]);
-
-  // Debounced File System Sync
-  useEffect(() => {
-    if (!dirHandle || !isDirty || bootStage !== 'ready' || isFolderPermissionMissing || isDemoMode) return;
+    if (!user?.id || bootStage !== 'ready' || isDemoMode) return;
 
     const timeout = setTimeout(async () => {
-      // @ts-ignore
-      const permission = await dirHandle.queryPermission({ mode: 'readwrite' });
-      if (permission === 'granted') {
-        await writeToFile(dirHandle, { transactions, categories });
-      } else {
-        setIsFolderPermissionMissing(true);
-      }
-    }, 1000);
+      await saveCloudData(user.id, transactions, categories);
+    }, 1500);
 
     return () => clearTimeout(timeout);
-  }, [transactions, categories, dirHandle, isDirty, bootStage, isFolderPermissionMissing, isDemoMode]);
+  }, [transactions, categories, user?.id, bootStage, isDemoMode]);
 
   // --- Handlers ---
-  const handleRequestFolderPermission = async () => {
-    if (!dirHandle) return;
-    try {
-      // MOD 2: Massive Try...Catch rescue protocol
-      // @ts-ignore
-      const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
-      if (permission === 'granted') {
-        const success = await readFromFile(dirHandle);
-        if (!success) {
-           throw new Error("Falha ao ler dados após permissão concedida.");
-        }
-        // Stage transition happens INSIDE readFromFile on success
-        setIsFolderPermissionMissing(false);
-      } else {
-        toast.error('Permissão negada para acessar a pasta.');
-      }
-    } catch (e: any) {
-      console.error("FALHA CRÍTICA NO BOOT:", e);
-      alert("Erro ao acessar a pasta sincronizada. Verifique as permissões ou tente sincronizar novamente. Código: " + e.message);
-      
-      // The Failsafe Rescue protocol
-      try {
-        if (dbInstance) await clearState(dbInstance);
-        localStorage.removeItem('verdegrana_db_handle');
-      } catch (innerErr) {
-        console.error("Erro ao limpar estado corrompido:", innerErr);
-      }
-      
-      window.location.reload();
-    }
-  };
-
-  const handleSelectDirectory = async () => {
-    if (!isFSApiSupported) {
-      alert("Seu navegador atual não suporta a sincronização de pastas locais (File System Access API). Por favor, use o Chrome ou opte pelo Modo Trial.");
-      return;
-    }
-    try {
-      // @ts-ignore
-      const handle = await window.showDirectoryPicker();
-      
-      if (isTrial) {
-        // Upgrade path: Permission is implicit in showDirectoryPicker for the new handle
-        await writeToFile(handle, { transactions, categories });
-        setDirHandle(handle);
-        setIsTrial(false);
-        setIsDemoMode(false);
-        setIsFolderPermissionMissing(false);
-        setConfirmModal({
-          open: true,
-          title: "Sucesso!",
-          description: "Seus dados do período de teste foram salvos e agora estão sincronizados de forma segura.",
-          action: () => {}
-        });
-      } else {
-        setDirHandle(handle);
-        // After selecting, we transition to the welcome screen for final handshake
-        setIsFolderPermissionMissing(true);
-        setBootStage('welcome');
-      }
-      toast.success('Diretório selecionado com sucesso!');
-    } catch (e) {
-      toast.error('Erro ao selecionar pasta.');
-    }
-  };
-
-  const startDemoMode = () => {
-    setIsDemoMode(true);
-    setBootStage('ready');
-    toast.warning('Modo Demonstrativo: Seus dados serão perdidos ao fechar a página.');
-  };
-
-  const skipFolderSync = () => {
-    setBootStage('ready');
-    toast.info('Usando apenas armazenamento local do navegador.');
-  };
-
-  // Intelligent Import Logic
   const processImport = useCallback((data: any[]) => {
     if (!Array.isArray(data)) {
       toast.error('Formato de dados inválido.');
@@ -1343,76 +1258,80 @@ export default function App() {
   }
 
   // Source Selector
-  if (bootStage === 'source') {
+  if (bootStage === 'auth') {
     return (
       <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-8">
-        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full space-y-10 text-center">
-          <div className="space-y-4">
-            <div className="w-20 h-20 bg-emerald-500/20 rounded-[2rem] mx-auto flex items-center justify-center">
-              <FolderSync className="w-10 h-10 text-emerald-500" />
+        {!supabase ? (
+          <div className="max-w-md w-full bg-rose-500/10 border border-rose-500/20 p-10 rounded-[3rem] text-center space-y-4">
+             <ShieldCheck className="w-12 h-12 text-rose-500 mx-auto" />
+             <h2 className="text-xl font-bold text-white uppercase tracking-tighter">Configuração Pendente</h2>
+             <p className="text-slate-400 text-sm">Insira as chaves do Supabase no código ou Variáveis de Ambiente para habilitar o Cloud Sync.</p>
+          </div>
+        ) : (
+          <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full space-y-10">
+            <div className="text-center space-y-4">
+              <div className="w-20 h-20 bg-emerald-500/20 rounded-[2rem] mx-auto flex items-center justify-center">
+                <Cloud className="w-10 h-10 text-emerald-500" />
+              </div>
+              <h2 className="text-3xl font-black text-white tracking-tighter uppercase">{isLoginMode ? 'Acessar Conta' : 'Criar Novo Perfil'}</h2>
+              <p className="text-slate-400 text-sm">{isLoginMode ? 'Sincronize seus dados financeiros na nuvem' : 'Comece sua jornada com segurança absoluta'}</p>
             </div>
-            <h2 className="text-3xl font-black text-white tracking-tighter uppercase leading-tight">Como deseja prosseguir?</h2>
-            <p className="text-slate-400 text-sm leading-relaxed">A sincronização mantém seus dados seguros e privados no seu dispositivo.</p>
-          </div>
-          
-          <div className="grid grid-cols-1 gap-4">
-            <button 
-              onClick={() => handleSourceSelect(false)}
-              className="p-8 glass rounded-[2.5rem] border border-emerald-500/30 group hover:bg-emerald-500 transition-all active:scale-95 text-left flex items-center gap-6"
-            >
-              <Cloud className="w-10 h-10 text-emerald-400 group-hover:text-white" />
-              <div>
-                <h3 className="text-xl font-bold text-white uppercase tracking-tight">Sincronizar Meus Dados</h3>
-                <p className="text-xs text-slate-500 group-hover:text-emerald-100 font-medium italic">Pasta local ou dispositivo</p>
-              </div>
-            </button>
-            
-            <button 
-              onClick={() => handleSourceSelect(true)}
-              className="p-8 glass rounded-[2.5rem] border border-white/5 group hover:border-white/20 transition-all active:scale-95 text-left flex items-center gap-6"
-            >
-              <Play className="w-10 h-10 text-slate-500 group-hover:text-white" />
-              <div>
-                <h3 className="text-xl font-bold text-white uppercase tracking-tight">Testar App (Trial)</h3>
-                <p className="text-xs text-slate-500 group-hover:text-slate-300 font-medium italic">Início imediato sem salvar</p>
-              </div>
-            </button>
-          </div>
 
-          <div className="pt-4">
-            <p className="text-[10px] text-slate-600 font-bold uppercase tracking-[0.25em] leading-relaxed">
-               Gerado por Luiz Gustavo Andrade Santos<br/>
-               App feito 100% com IA<br/>
-               Todos os direitos reservados ao Google AI Studio
-             </p>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
+            <div className="space-y-4">
+               <div className="space-y-2">
+                 <label className="text-[10px] uppercase font-black text-slate-600 ml-4 tracking-widest">E-mail</label>
+                 <div className="relative">
+                   <Mail className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                   <input 
+                    type="email" 
+                    value={authEmail}
+                    onChange={e => setAuthEmail(e.target.value)}
+                    placeholder="seu@email.com" 
+                    className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl pl-16 pr-6 text-white outline-none focus:border-emerald-500 transition-all" 
+                   />
+                 </div>
+               </div>
 
-  // Security Prompt
-  if (bootStage === 'security') {
-    return (
-      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-8">
-        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full space-y-8 text-center bg-emerald-500/5 p-10 rounded-[3rem] border border-emerald-500/20">
-          <div className="w-20 h-20 bg-emerald-500/10 rounded-[2rem] mx-auto flex items-center justify-center">
-            <Lock className="w-10 h-10 text-emerald-500" />
-          </div>
-          <div className="space-y-4">
-            <h2 className="text-2xl font-black text-white tracking-tighter uppercase leading-tight">Configurações de Segurança</h2>
-            <p className="text-slate-400 text-sm leading-relaxed">
-              Por questões de segurança e organização, recomendamos que você crie uma pasta exclusiva chamada <span className="text-emerald-400 font-black">'VerdeGrana'</span> no seu dispositivo.
-            </p>
-          </div>
-          
-          <button 
-            onClick={handleSelectDirectory}
-            className="w-full py-6 bg-emerald-500 rounded-2xl font-black text-white text-sm uppercase shadow-2xl shadow-emerald-500/20 active:scale-95 transition-all"
-          >
-            Selecionar Pasta de Sincronização
-          </button>
-        </motion.div>
+               <div className="space-y-2">
+                 <label className="text-[10px] uppercase font-black text-slate-600 ml-4 tracking-widest">Senha</label>
+                 <div className="relative">
+                   <Lock className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                   <input 
+                    type="password" 
+                    value={authPass}
+                    onChange={e => setAuthPass(e.target.value)}
+                    placeholder="••••••••" 
+                    className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl pl-16 pr-6 text-white outline-none focus:border-emerald-500 transition-all" 
+                   />
+                 </div>
+               </div>
+
+               <button 
+                onClick={() => handleAuth(isLoginMode ? 'login' : 'signup')}
+                disabled={isAuthLoading}
+                className="w-full py-6 bg-emerald-500 rounded-2xl font-black text-white text-sm uppercase shadow-2xl shadow-emerald-500/20 active:scale-95 transition-all flex items-center justify-center gap-3"
+               >
+                 {isAuthLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : (isLoginMode ? 'Entrar' : 'Criar Conta')}
+               </button>
+
+               <div className="flex flex-col gap-4 text-center pt-4">
+                  <button 
+                    onClick={() => setIsLoginMode(!isLoginMode)}
+                    className="text-xs text-slate-500 font-bold uppercase tracking-widest hover:text-emerald-400 transition-colors"
+                  >
+                    {isLoginMode ? 'Não tem uma conta? Cadastre-se' : 'Já tem uma conta? Entre agora'}
+                  </button>
+                  <div className="h-px bg-white/5 w-full my-2" />
+                  <button 
+                    onClick={() => { setIsTrial(true); setIsDemoMode(true); setTransactions([]); setBootStage('welcome'); }}
+                    className="text-[10px] text-slate-600 font-black uppercase tracking-[0.3em] hover:text-slate-400"
+                  >
+                    Continuar como Visitante (Modo Trial)
+                  </button>
+               </div>
+            </div>
+          </motion.div>
+        )}
       </div>
     );
   }
@@ -1426,38 +1345,40 @@ export default function App() {
                {isTrial ? <Play className="w-12 h-12" /> : <UserCheck className="w-12 h-12" />}
             </div>
             <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">
-              {isTrial ? 'Seja Bem-vindo!' : 'BEM-VINDO DE VOLTA!'}
+              {isTrial ? 'Seja Bem-vindo!' : 'TUDO PRONTO!'}
             </h1>
             <p className="text-slate-400 text-sm leading-relaxed px-4">
               {isTrial 
                 ? 'Você está em modo de teste. Seus dados não serão salvos permanentemente.' 
-                : 'Detectamos sua pasta de sincronização. Clique para carregar seus dados financeiros.'}
+                : `Conectado como ${user?.email}. Seus dados estão sendo guardados na nuvem.`}
             </p>
           </div>
 
-          {!isTrial && dirHandle && (
+          {!isTrial && user && (
             <div className="bg-emerald-500/5 p-5 rounded-3xl border border-emerald-500/10 text-left flex items-center gap-4">
-               <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-500"><Folder className="w-5 h-5" /></div>
+               <div className="p-2.5 bg-emerald-500/20 rounded-xl text-emerald-500"><Cloud className="w-5 h-5" /></div>
                <div className="flex-1 min-w-0">
-                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Pasta Sincronizada</p>
-                  <p className="text-xs text-slate-400 truncate font-mono">{dirHandle?.name || 'Local de Dados'}</p>
+                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Sincronização em Nuvem</p>
+                  <p className="text-xs text-slate-400 truncate font-mono">Status: Ativo & Seguro</p>
                </div>
             </div>
           )}
 
           <div className="space-y-4">
              <button 
-              onClick={isTrial ? () => setBootStage('ready') : handleRequestFolderPermission}
+              onClick={() => setBootStage('ready')}
               className="w-full py-6 bg-emerald-600 rounded-3xl font-black text-white hover:bg-emerald-500 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-xl shadow-emerald-600/20"
              >
                {isTrial ? 'Começar Agora' : 'ACESSAR MEU PAINEL'} <ArrowRight className="w-5 h-5" />
              </button>
-             <button 
-              onClick={() => { clearState(dbInstance); setBootStage('source'); setIsTrial(false); setIsDemoMode(false); }}
-              className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-slate-500 text-xs uppercase hover:bg-white/10 transition-all active:scale-95"
-             >
-                TROCAR FONTE DE DADOS
-             </button>
+             {!isTrial && (
+                <button 
+                  onClick={handleLogout}
+                  className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-slate-500 text-xs uppercase hover:bg-white/10 transition-all active:scale-95"
+                >
+                  CONECTAR COM OUTRA CONTA
+                </button>
+             )}
           </div>
         </motion.div>
       </div>
@@ -1542,14 +1463,14 @@ export default function App() {
                   </div>
                 ) : null}
                 
-                {dirHandle && (
+               {user && (
                   <div className={cn(
                     "flex items-center gap-1 text-[10px] font-bold ml-2 transition-all",
                     syncStatus === 'saving' ? "text-amber-500 animate-pulse" : 
                     syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
                   )}>
-                    {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FolderSync className="w-3 h-3" />}
-                    {syncStatus === 'saving' ? 'SALVANDO...' : 'SINCRONIZADO'}
+                    {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
+                    {syncStatus === 'saving' ? 'SINCRONIZANDO...' : 'NUVEM ATIVA'}
                   </div>
                 )}
               </div>
@@ -2198,33 +2119,16 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
               <motion.div key="set" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
                 <Card className="p-10 flex flex-col gap-6">
                   <div className="flex items-center gap-4">
-                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl"><FolderSync /></div>
-                    <h3 className="text-xl font-bold text-white">Sincronização Local</h3>
+                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl"><Cloud /></div>
+                    <h3 className="text-xl font-bold text-white">Sincronização na Nuvem</h3>
                   </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">Conecte a uma pasta pra sincronizar e guardar seus arquivos, o VerdeGrana fará isso em tempo real. Isso garante que nada seja perdido tão facilmente.</p>
+                  <p className="text-slate-400 text-sm leading-relaxed">Seus dados estão protegidos e sincronizados em tempo real com sua conta no Supabase. Isso garante acesso multiplataforma e persistência total.</p>
+                  <div className="mt-auto bg-emerald-500/5 p-4 rounded-2xl border border-emerald-500/10">
+                     <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Status da Conta</p>
+                     <p className="text-sm text-slate-300 font-bold truncate">{user ? `Conectado como ${user.email}` : 'Visitante'}</p>
+                  </div>
                   <button 
                     onClick={() => {
-                      if (isTrial) {
-                        toast.error('Função indisponível no modo Trial. Sincronize seus dados para liberar.');
-                        return;
-                      }
-                      setConfirmModal({
-                        open: true,
-                        title: 'Configurar Folder Sync?',
-                        description: 'Isso permitirá que o VerdeGrana salve seus dados diretamente em uma pasta do seu dispositivo.',
-                        action: handleSelectDirectory
-                      });
-                    }}
-                    className="mt-auto flex items-center justify-center gap-3 py-5 bg-white/5 border border-white/10 rounded-2xl group hover:bg-white/10 transition-all text-white font-bold"
-                  >
-                    <FileJson className="group-hover:text-emerald-400 transition-colors" /> Configurar Folder Sync
-                  </button>
-                  <button 
-                    onClick={() => {
-                      if (isTrial) {
-                        toast.error('Função indisponível no modo Trial. Sincronize seus dados para liberar.');
-                        return;
-                      }
                       setConfirmModal({
                         open: true,
                         title: 'Baixar Backup Local?',
@@ -2288,24 +2192,23 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                               categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }))
                             };
                             
-                            if (dirHandle) {
+                            if (user && supabase) {
                               try {
-                                const fileHandle = await dirHandle.getFileHandle(FILE_NAME, { create: true });
-                                const writable = await fileHandle.createWritable();
-                                await writable.write(JSON.stringify(emptySchema, null, 2));
-                                await writable.close();
+                                await supabase
+                                  .from('userdata')
+                                  .delete()
+                                  .eq('user_id', user.id);
                               } catch (e) {
-                                console.error('Falha ao limpar arquivo:', e);
+                                console.error('Falha ao limpar nuvem:', e);
                               }
                             }
                             
-                            if (dbInstance) {
-                              await clearState(dbInstance);
-                            }
-                            
+                            setTransactions([]);
+                            setCategories(DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
                             localStorage.clear();
                             sessionStorage.clear();
-                            window.location.reload();
+                            toast.success('Todos os dados foram apagados.');
+                            setTimeout(() => window.location.reload(), 1500);
                           }
                         });
                       }}
@@ -2350,31 +2253,25 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <button 
                       onClick={async () => {
-                         try {
-                           // @ts-ignore
-                           const handle = await window.showDirectoryPicker();
-                           await writeToFile(handle, { transactions, categories });
-                           localStorage.clear();
-                           window.location.reload();
-                         } catch (e) {
-                           toast.error('Operação cancelada ou falha ao sincronizar.');
-                         }
+                         setConfirmModal({
+                           open: true,
+                           title: 'Encerrar Sessão',
+                           description: 'Isso desconectará sua conta e limpará os dados locais do dispositivo.',
+                           action: handleLogout
+                         });
                       }}
                       className="px-8 py-6 bg-emerald-600 rounded-3xl font-black text-white hover:bg-emerald-500 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-xl shadow-emerald-600/20"
                     >
-                      <FolderSync className="w-6 h-6" /> Sincronizar e Sair
+                      <LogOut className="w-6 h-6" /> Encerrar Sessão
                     </button>
                     
                     <button 
                       onClick={() => {
-                        if (confirm("Tem certeza que deseja sair sem salvar as alterações recentes? Todos os dados não sincronizados serão perdidos.")) {
-                          localStorage.clear();
-                          window.location.reload();
-                        }
+                        window.location.reload();
                       }}
                       className="px-8 py-6 bg-white/5 border border-white/10 rounded-3xl font-black text-slate-400 hover:bg-rose-500/10 hover:text-rose-400 hover:border-rose-500/30 transition-all active:scale-95 flex items-center justify-center gap-3"
                     >
-                      <LogOut className="w-6 h-6 text-rose-500/60" /> Sair sem Salvar
+                      <RefreshCw className="w-6 h-6 text-rose-500/60" /> Reiniciar App
                     </button>
                   </div>
                 </Card>
@@ -2602,47 +2499,7 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {isFolderPermissionMissing && bootStage === 'ready' && (
-          <motion.div 
-            initial={{ opacity: 0 }} 
-            animate={{ opacity: 1 }} 
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[200] bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-6"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="glass max-w-sm w-full p-10 rounded-[3.5rem] text-center space-y-8 border border-emerald-500/30 shadow-2xl relative overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500 animate-pulse" />
-              <div className="w-20 h-20 bg-emerald-500/20 rounded-3xl mx-auto flex items-center justify-center">
-                <FolderSync className="w-10 h-10 text-emerald-500" />
-              </div>
-              <div className="space-y-3">
-                <h3 className="text-2xl font-black text-white tracking-tighter">Bem-vindo de volta!</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">Sua pasta de dados local foi detectada. Clique abaixo para reativar a sincronização automática e carregar seus dados.</p>
-              </div>
-              <div className="space-y-3 pt-4">
-                <button 
-                  onClick={handleRequestFolderPermission}
-                  className="w-full py-5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold transition-all shadow-xl shadow-emerald-500/20 active:scale-95 flex items-center justify-center gap-3"
-                >
-                  <RefreshCw className="w-5 h-5" /> Sincronizar Diretório
-                </button>
-                <button 
-                  onClick={() => setIsFolderPermissionMissing(false)}
-                  className="w-full py-4 text-slate-500 text-xs font-bold hover:text-slate-300 transition-colors"
-                >
-                  Continuar sem sincronização
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* DASHBOARD MODAL/OVERLAY ON BOOT IF DESIRED */}
+      {/* MODALS & OVERLAYS */}
       <AnimatePresence>
         {isAddModalOpen && (
           <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center p-0 md:p-6">

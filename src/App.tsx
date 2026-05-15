@@ -112,6 +112,7 @@ interface Transaction {
   value: number;
   category: string;
   type: TransactionType;
+  profile_name: string;
 }
 
 interface Category {
@@ -676,6 +677,9 @@ export default function App() {
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [isTrial, setIsTrial] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('reports');
+  const [activeProfile, setActiveProfile] = useState<string>(() => {
+    return localStorage.getItem('verdegrana_active_profile') || 'Principal';
+  });
   const [viewMode, setViewMode] = useState<'tudo' | 'receitas' | 'despesas' | 'personalizado'>('tudo');
   const [confirmModal, setConfirmModal] = useState<{
     open: boolean;
@@ -922,45 +926,143 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    localStorage.setItem('verdegrana_active_profile', activeProfile);
+  }, [activeProfile]);
+
+  const allProfiles = useMemo(() => {
+    const fromTxs = Array.from(new Set(transactions.map(t => t.profile_name || 'Principal')));
+    if (!fromTxs.includes('Principal')) fromTxs.push('Principal');
+    if (!fromTxs.includes(activeProfile)) fromTxs.push(activeProfile);
+    return fromTxs.filter(Boolean).sort();
+  }, [transactions, activeProfile]);
+
+  // --- Handlers ---
+  const handleAddTransaction = async (data: Omit<Transaction, 'id'>) => {
+    const newId = crypto.randomUUID();
+    const newTx: Transaction = { ...data, id: newId };
+    
+    setTransactions(prev => {
+      const next = [...prev, newTx];
+      pushToHistory(next);
+      return next;
+    });
+
+    if (isCloudMode && user && supabase) {
+      try {
+        await supabase.from('transactions').insert([{
+          id: newId,
+          user_id: user.id,
+          date: data.date,
+          description: data.desc,
+          category: data.category,
+          type: data.type,
+          amount: data.value,
+          profile_name: data.profile_name
+        }]);
+      } catch (err) {
+        console.error("Erro ao sincronizar inserção:", err);
+      }
+    }
+    toast.success('Lançamento adicionado!');
+  };
+
+  const handleUpdateTransaction = async (id: string, data: Partial<Transaction>) => {
+    setTransactions(prev => {
+      const next = prev.map(t => t.id === id ? { ...t, ...data } : t);
+      pushToHistory(next);
+      return next;
+    });
+
+    if (isCloudMode && user && supabase) {
+      try {
+        await supabase.from('transactions').update({
+          date: data.date,
+          description: data.desc,
+          category: data.category,
+          type: data.type,
+          amount: data.value,
+          profile_name: data.profile_name
+        }).eq('id', id);
+      } catch (err) {
+        console.error("Erro ao sincronizar atualização:", err);
+      }
+    }
+  };
+
+  const handleDeleteTransactions = async (ids: string[]) => {
+    setTransactions(prev => {
+      const next = prev.filter(t => !ids.includes(t.id));
+      pushToHistory(next);
+      return next;
+    });
+
+    if (isCloudMode && user && supabase) {
+      try {
+        await supabase.from('transactions').delete().in('id', ids);
+      } catch (err) {
+        console.error("Erro ao sincronizar deleção:", err);
+      }
+    }
+  };
+
   const fetchCloudData = async (userId: string) => {
-    if (!supabase) return { transactions: [], categories: [] };
+    if (!supabase) return;
     try {
-      const { data, error } = await supabase
+      setSyncStatus('saving');
+      // Load Categories and Metadata from userdata
+      const { data: userMeta } = await supabase
         .from('userdata')
         .select('data')
         .eq('user_id', userId)
         .single();
       
-      if (error && error.code !== 'PGRST116') throw error;
-      
-      if (data?.data) {
-        setTransactions(data.data.transactions || []);
-        setCategories(data.data.categories || DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
-        return data.data;
+      if (userMeta?.data?.categories) {
+        setCategories(userMeta.data.categories);
       }
-      return { transactions: [], categories: [] };
+
+      // Load Transactions from transactions table
+      const { data: cloudTxs, error: txError } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId);
+      
+      if (txError) throw txError;
+
+      if (cloudTxs) {
+        const mappedTxs: Transaction[] = cloudTxs.map((t: any) => ({
+          id: t.id,
+          date: t.date,
+          desc: t.description,
+          value: t.amount,
+          category: t.category,
+          type: t.type,
+          profile_name: t.profile_name || 'Principal'
+        }));
+        setTransactions(mappedTxs);
+      }
+      setSyncStatus('synced');
     } catch (e: any) {
       console.error("Erro ao buscar dados na nuvem:", e);
-      return { transactions: [], categories: [] };
+      setSyncStatus('error');
     }
   };
 
-  const saveCloudData = async (userId: string, txs: Transaction[], cats: Category[]) => {
-    if (!supabase) return;
+  const saveCloudMetadata = async (userId: string, cats: Category[]) => {
+    if (!supabase || !isCloudMode) return;
     try {
       setSyncStatus('saving');
       const { error } = await supabase
         .from('userdata')
         .upsert({ 
           user_id: userId, 
-          data: { transactions: txs, categories: cats },
+          data: { categories: cats },
           updated_at: new Date().toISOString()
         });
       
       if (error) throw error;
       setSyncStatus('synced');
     } catch (e: any) {
-      console.error("Erro ao salvar na nuvem:", e);
       setSyncStatus('error');
     }
   };
@@ -1040,16 +1142,16 @@ export default function App() {
     boot();
   }, []);
 
-  // Debounced Cloud Sync
+  // Debounced Cloud Sync for Metadata
   useEffect(() => {
     if (!user?.id || !isCloudMode || bootStage !== 'ready' || isDemoMode) return;
 
     const timeout = setTimeout(async () => {
-      await saveCloudData(user.id, transactions, categories);
-    }, 1500);
+      await saveCloudMetadata(user.id, categories);
+    }, 3000);
 
     return () => clearTimeout(timeout);
-  }, [transactions, categories, user?.id, bootStage, isDemoMode]);
+  }, [categories, user?.id, bootStage, isDemoMode]);
 
   // --- Handlers ---
   const processImport = useCallback((data: any[]) => {
@@ -1058,7 +1160,6 @@ export default function App() {
       return;
     }
 
-    const newTransactions: Transaction[] = [];
     const newCategories: Category[] = [...categories];
 
     data.forEach(item => {
@@ -1076,30 +1177,28 @@ export default function App() {
         toast.info(`Nova categoria criada: ${catName}`);
       }
 
-      // Deduplication check (Hash of date + desc + value)
+      // Deduplication check
       const hash = `${item.date}-${item.desc}-${item.value}`;
       const isDuplicate = transactions.some(t => `${t.date}-${t.desc}-${t.value}` === hash);
 
       if (!isDuplicate) {
-        newTransactions.push({
+        handleAddTransaction({
           ...item,
-          id: crypto.randomUUID()
-        } as Transaction);
+          value: item.value,
+          profile_name: activeProfile
+        } as Omit<Transaction, 'id'>);
       }
     });
 
     setCategories(newCategories);
-    if (newTransactions.length > 0) {
-      setTransactions(prev => [...prev, ...newTransactions]);
-      toast.success(`${newTransactions.length} transações importadas com sucesso!`);
-    } else {
-      toast.info('Nenhuma transação nova detectada.');
-    }
-  }, [categories, transactions]);
+  }, [categories, transactions, activeProfile]);
 
   // Calculations & Filters
   const currentTransactions = useMemo(() => {
     return transactions.filter(t => {
+      // Profile filter
+      if (t.profile_name !== activeProfile) return false;
+
       const date = new Date(t.date);
       // High-level filters
       if (viewMode === 'receitas' && t.type !== 'entrada') return false;
@@ -1902,9 +2001,7 @@ export default function App() {
                            >
                               <button onClick={() => { setEditingTransaction(t); setIsAddModalOpen(true); }} className="p-3 bg-white/5 rounded-xl text-emerald-400 hover:bg-emerald-500/20 transition-all active:scale-95"><Edit3 className="w-5 h-5" /></button>
                               <button onClick={() => {
-                                const next = transactions.filter(tx => tx.id !== t.id);
-                                setTransactions(next);
-                                pushToHistory(next);
+                                handleDeleteTransactions([t.id]);
                                 setSelectedTxIds([]);
                                 toast.error('Lançamento removido');
                               }} className="p-3 bg-red-500/10 rounded-xl text-red-500 hover:bg-red-500/20 transition-all active:scale-95"><Trash2 className="w-5 h-5" /></button>
@@ -1926,9 +2023,7 @@ export default function App() {
                         <p className="text-xs font-black uppercase text-slate-400 ml-2">{selectedTxIds.length} Selecionados</p>
                         <button
                           onClick={() => {
-                            const next = transactions.filter(t => !selectedTxIds.includes(t.id));
-                            setTransactions(next);
-                            pushToHistory(next);
+                            handleDeleteTransactions(selectedTxIds);
                             setSelectedTxIds([]);
                             toast.error(`${selectedTxIds.length} registros excluídos`);
                           }}
@@ -2174,6 +2269,56 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
 
             {activeTab === 'settings' && (
               <motion.div key="set" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+                <Card className="p-10 flex flex-col gap-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl">{isCloudMode ? <Cloud /> : <Folder />}</div>
+                    <h3 className="text-xl font-bold text-white tracking-tighter">Gerenciador de Progressos (Perfis)</h3>
+                  </div>
+                  <p className="text-slate-400 text-sm leading-relaxed">Organize múltiplas frentes financeiras (Ex: Pessoal, Negócios). Selecione o perfil ativo para filtrar todo o painel.</p>
+                  
+                  <div className="space-y-4">
+                    <div className="p-4 bg-white/5 rounded-2xl border border-white/10 space-y-2">
+                       <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Perfil Ativo Atualmente</p>
+                       <div className="flex items-center justify-between">
+                          <p className="text-lg font-black text-white truncate">{activeProfile}</p>
+                          <div className="px-2 py-1 bg-emerald-500/10 rounded border border-emerald-500/30 text-[8px] font-black text-emerald-500 uppercase">Selecionado</div>
+                       </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                       {allProfiles.map(p => (
+                         <button 
+                          key={p}
+                          onClick={() => {
+                            setActiveProfile(p);
+                            toast.success(`Perfil alternado para: ${p}`);
+                          }}
+                          className={cn(
+                            "w-full p-4 rounded-xl text-left transition-all border flex items-center justify-between group",
+                            activeProfile === p ? "bg-emerald-500 text-white border-emerald-400" : "bg-white/5 border-white/5 hover:border-white/20 text-slate-400"
+                          )}
+                         >
+                            <span className="font-bold text-xs uppercase tracking-widest">{p}</span>
+                            {activeProfile === p ? <UserCheck className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />}
+                         </button>
+                       ))}
+                    </div>
+
+                    <button 
+                      onClick={() => {
+                        const name = prompt('Nome do novo progresso/perfil:');
+                        if (name && name.trim()) {
+                          setActiveProfile(name.trim());
+                          toast.success(`Progresso "${name}" criado e ativado!`);
+                        }
+                      }}
+                      className="w-full py-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 font-black uppercase text-xs tracking-widest hover:bg-emerald-500/20 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-4 h-4" /> Criar Novo Progresso
+                    </button>
+                  </div>
+                </Card>
+
                 <Card className="p-10 flex flex-col gap-6">
                   <div className="flex items-center gap-4">
                     <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl">{isCloudMode ? <Cloud /> : <Folder />}</div>
@@ -2587,23 +2732,15 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                   desc: fd.get('desc') as string,
                   value: val,
                   category: fd.get('category') as string,
-                  type: rawType
+                  type: rawType,
+                  profile_name: activeProfile
                 };
 
                 if (editingTransaction) {
-                  setTransactions(p => {
-                    const next = p.map(it => it.id === editingTransaction.id ? { ...it, ...data } : it);
-                    pushToHistory(next);
-                    return next;
-                  });
+                  handleUpdateTransaction(editingTransaction.id, data);
                   toast.success('Lançamento atualizado!');
                 } else {
-                  setTransactions(p => {
-                    const next = [...p, { ...data, id: crypto.randomUUID() }];
-                    pushToHistory(next);
-                    return next;
-                  });
-                  toast.success('Lançamento adicionado!');
+                  handleAddTransaction(data);
                 }
                 setIsAddModalOpen(false);
                 setEditingTransaction(null);

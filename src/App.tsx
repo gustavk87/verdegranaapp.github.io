@@ -845,18 +845,66 @@ export default function App() {
     setHistoryPointer(prev => Math.min(prev + 1, 49));
   }, [historyPointer]);
 
-  const undo = () => {
+  const undo = async () => {
     if (historyPointer > 0) {
       const prevState = history[historyPointer - 1];
+      const currentState = transactions;
+      
+      // Omni-Sync: Detect difference and sync to cloud
+      if (isCloudMode && user && supabase) {
+        const removed = currentState.filter(t => !prevState.some(pt => pt.id === t.id));
+        const added = prevState.filter(pt => !currentState.some(t => t.id === pt.id));
+        
+        if (removed.length > 0) {
+          await supabase.from('transactions').delete().in('id', removed.map(t => t.id));
+        }
+        if (added.length > 0) {
+          await supabase.from('transactions').insert(added.map(t => ({
+            id: t.id,
+            user_id: user.id,
+            date: t.date,
+            description: t.desc,
+            category: t.category,
+            type: t.type,
+            amount: t.value,
+            profile_name: t.profile_name
+          })));
+        }
+      }
+      
       setTransactions(prevState);
       setHistoryPointer(historyPointer - 1);
       toast.info('Ação desfeita');
     }
   };
 
-  const redo = () => {
+  const redo = async () => {
     if (historyPointer < history.length - 1) {
       const nextState = history[historyPointer + 1];
+      const currentState = transactions;
+
+      // Omni-Sync: Detect difference and sync to cloud
+      if (isCloudMode && user && supabase) {
+        const removed = currentState.filter(t => !nextState.some(nt => nt.id === t.id));
+        const added = nextState.filter(nt => !currentState.some(t => t.id === nt.id));
+
+        if (removed.length > 0) {
+          await supabase.from('transactions').delete().in('id', removed.map(t => t.id));
+        }
+        if (added.length > 0) {
+          await supabase.from('transactions').insert(added.map(t => ({
+            id: t.id,
+            user_id: user.id,
+            date: t.date,
+            description: t.desc,
+            category: t.category,
+            type: t.type,
+            amount: t.value,
+            profile_name: t.profile_name
+          })));
+        }
+      }
+
       setTransactions(nextState);
       setHistoryPointer(historyPointer + 1);
       toast.info('Ação refeita');
@@ -930,29 +978,17 @@ export default function App() {
         } else {
           toast.success('BEM-VINDO DE VOLTA!');
           
-          // Merge logic
-          if (transactions.length > 0 && isTrial) {
-            setConfirmModal({
-              open: true,
-              title: "Mesclar Dados?",
-              description: "Detectamos dados no modo Trial. Deseja mesclar esses dados com sua conta na nuvem?",
-              action: async () => {
-                const cloudData = await fetchCloudData(data.user.id);
-                const mergedTransactions = [...transactions];
-                cloudData.transactions.forEach((t: any) => {
-                  if (!mergedTransactions.some(mt => mt.id === t.id)) {
-                    mergedTransactions.push(t);
-                  }
-                });
-                setTransactions(mergedTransactions);
-                setIsTrial(false);
-                setBootStage('welcome');
-              }
-            });
+          const cloud = await fetchCloudData(data.user.id);
+          setIsTrial(false);
+          
+          const profiles = Array.from(new Set((cloud.transactions || []).map((t: any) => t.profile_name || 'Principal')));
+          if (!profiles.includes('Principal')) profiles.push('Principal');
+
+          if (profiles.length > 1) {
+            setBootStage('profile_select');
           } else {
-            await fetchCloudData(data.user.id);
-            setIsTrial(false);
-            setBootStage('welcome');
+            setActiveProfile(profiles[0]);
+            setBootStage('ready');
           }
         }
       }
@@ -1129,17 +1165,31 @@ export default function App() {
         const content = event.target?.result as string;
         const data = JSON.parse(content);
         
+        let txs = [];
         if (data.transactions && Array.isArray(data.transactions)) {
-          setTransactions(data.transactions);
+          txs = data.transactions;
+        } else if (Array.isArray(data)) {
+          txs = data;
         }
+        
         if (data.categories && Array.isArray(data.categories)) {
           setCategories(data.categories);
         }
         
+        setTransactions(txs);
         setIsCloudMode(false);
         setIsTrial(false);
         setIsDemoMode(false);
-        setBootStage('welcome');
+        
+        // Determine profile
+        const profiles = Array.from(new Set(txs.map((t: any) => t.profile_name || 'Principal')));
+        if (profiles.length > 1) {
+          setBootStage('profile_select');
+        } else {
+          setActiveProfile(profiles[0] || 'Principal');
+          setBootStage('ready');
+        }
+        
         toast.success('Arquivo local carregado!');
       } catch (err) {
         toast.error('Erro ao ler arquivo. Formato inválido.');
@@ -1178,10 +1228,13 @@ export default function App() {
             const profiles = Array.from(new Set(txs.map((t: any) => t.profile_name || 'Principal')));
             if (!profiles.includes('Principal')) profiles.push('Principal');
             
-            if (profiles.length > 1) {
+            // Use localStorage if available to skip selection
+            const savedProfile = localStorage.getItem('verdegrana_active_profile');
+            
+            if (profiles.length > 1 && (!savedProfile || !profiles.includes(savedProfile))) {
               setBootStage('profile_select');
             } else {
-              setActiveProfile(profiles[0]);
+              setActiveProfile(savedProfile || profiles[0]);
               setBootStage('ready');
             }
           } else {
@@ -1490,17 +1543,34 @@ export default function App() {
         onClick={handlePresentationTouch}
         className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center p-12 text-center select-none cursor-pointer"
       >
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-12 max-w-sm">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-12 max-w-sm flex flex-col items-center">
           <div className="space-y-4">
              <h2 className="text-4xl font-black text-white tracking-tighter uppercase">Simples e Seguro</h2>
              <p className="text-slate-400 text-lg leading-relaxed">Gerencie seus gastos sem que seus dados saiam do seu aparelho.</p>
           </div>
           
-          <div className="flex flex-col gap-6 items-center">
-            <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center animate-bounce">
-              <ShieldCheck className="w-8 h-8 text-emerald-500" />
-            </div>
-            <p className="text-emerald-500 font-black text-xs uppercase tracking-[0.2em] animate-pulse">Toque na tela para continuar</p>
+          <div className="flex flex-col gap-8 w-full items-center">
+            <button 
+              onClick={handlePresentationTouch}
+              className="group flex flex-col items-center gap-4 transition-all active:scale-95"
+            >
+              <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center animate-bounce group-hover:bg-emerald-500/20">
+                <ShieldCheck className="w-8 h-8 text-emerald-500" />
+              </div>
+              <p className="text-emerald-500 font-black text-xs uppercase tracking-[0.2em] animate-pulse">Entrar com Cloud Sync</p>
+            </button>
+
+            <div className="h-px w-32 bg-white/5" />
+
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                document.getElementById('fileInput')?.click();
+              }}
+              className="flex items-center gap-2 text-slate-500 hover:text-slate-300 font-black text-[10px] uppercase tracking-[0.3em] transition-colors"
+            >
+              <Folder className="w-3 h-3" /> Prosseguir com ficheiros locais
+            </button>
           </div>
         </motion.div>
       </div>

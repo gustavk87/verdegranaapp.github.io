@@ -42,7 +42,9 @@ import {
   Cloud,
   Play,
   Lock,
-  ArrowDownUp
+  ArrowDownUp,
+  Users,
+  Edit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
@@ -813,6 +815,16 @@ export default function App() {
   const [quickAddDate, setQuickAddDate] = useState<string | null>(null);
   const [isChartReady, setIsChartReady] = useState(false);
   const [isDashboardRevealed, setIsDashboardRevealed] = useState(false);
+  
+  // Folder Sync handles
+  const [folderHandle, setFolderHandle] = useState<any>(null);
+  const [isFolderTutorialOpen, setIsFolderTutorialOpen] = useState(false);
+
+  // Persistent Profiles List
+  const [profilesList, setProfilesList] = useState<string[]>(() => {
+    const saved = localStorage.getItem('verdegrana_profiles_list');
+    return saved ? JSON.parse(saved) : ['Principal'];
+  });
 
   const [uiScale, setUiScale] = useState<number>(() => {
     const saved = localStorage.getItem('verdegrana_ui_scale');
@@ -833,6 +845,58 @@ export default function App() {
   }, []);
   const [wipeStep, setWipeStep] = useState(0);
   const [wipeConfirmText, setWipeConfirmText] = useState('');
+
+  // Folder Sync Logic
+  const saveToFolder = async (txs: Transaction[], cats: Category[]) => {
+    if (!folderHandle) return;
+    try {
+      const fileHandle = await folderHandle.getFileHandle('verdegrana_data.json', { create: true });
+      const writable = await fileHandle.createWritable();
+      const content = JSON.stringify({ transactions: txs, categories: cats, profilesList }, null, 2);
+      await writable.write(content);
+      await writable.close();
+      setSyncStatus('synced');
+    } catch (e) {
+      console.error("Erro ao salvar na pasta:", e);
+      setSyncStatus('error');
+    }
+  };
+
+  const handleFolderSelection = async () => {
+    try {
+      // @ts-ignore
+      const handle = await window.showDirectoryPicker();
+      setFolderHandle(handle);
+      setIsFolderTutorialOpen(false);
+      
+      // Try to read existing file if any
+      try {
+        const fileHandle = await handle.getFileHandle('verdegrana_data.json');
+        const file = await fileHandle.getFile();
+        const content = await file.text();
+        const data = JSON.parse(content);
+        
+        if (data.transactions) setTransactions(data.transactions);
+        if (data.categories) setCategories(data.categories);
+        if (data.profilesList) setProfilesList(data.profilesList);
+        
+        toast.success('Pasta vinculada e dados sincronizados!');
+      } catch (e) {
+        // File doesn't exist, create it later
+        toast.success('Pasta vinculada! Criando arquivo de sincronização...');
+        saveToFolder(transactions, categories);
+      }
+      
+      setIsCloudMode(false);
+      setIsTrial(false);
+      setBootStage('profile_select');
+    } catch (e: any) {
+      if (e.name === 'AbortError') return;
+      alert("Seu navegador não suporta sincronização de pasta ou ocorreu um erro. Usando Modo Trial (Local).");
+      setIsTrial(true);
+      setBootStage('profile_select');
+    }
+  };
 
   // Undo/Redo Logic
   const pushToHistory = useCallback((newTransactions: Transaction[]) => {
@@ -927,6 +991,10 @@ export default function App() {
     localStorage.setItem('verdegrana_categories', JSON.stringify(categories));
   }, [categories]);
 
+  useEffect(() => {
+    localStorage.setItem('verdegrana_profiles_list', JSON.stringify(profilesList));
+  }, [profilesList]);
+
   // Sync state to IDB (Instant)
   useEffect(() => {
     if (activeTab === 'reports') {
@@ -1004,13 +1072,92 @@ export default function App() {
   }, [activeProfile]);
 
   const allProfiles = useMemo(() => {
-    const fromTxs = Array.from(new Set(transactions.map(t => t.profile_name || 'Principal')));
-    if (!fromTxs.includes('Principal')) fromTxs.push('Principal');
-    if (!fromTxs.includes(activeProfile)) fromTxs.push(activeProfile);
-    return fromTxs.filter(Boolean).sort();
-  }, [transactions, activeProfile]);
+    return profilesList.sort();
+  }, [profilesList]);
 
   // --- Handlers ---
+  const handleRenameProfile = async (oldName: string, newName: string) => {
+    if (!newName || profilesList.includes(newName)) {
+      toast.error('Nome inválido ou já existente.');
+      return;
+    }
+
+    setProfilesList(prev => prev.map(p => p === oldName ? newName : p));
+    if (activeProfile === oldName) setActiveProfile(newName);
+
+    setTransactions(prev => {
+      const next = prev.map(t => t.profile_name === oldName ? { ...t, profile_name: newName } : t);
+      pushToHistory(next);
+      return next;
+    });
+
+    if (isCloudMode && user && supabase) {
+      await supabase.from('transactions').update({ profile_name: newName }).eq('user_id', user.id).eq('profile_name', oldName);
+    }
+    
+    toast.success(`Perfil ${oldName} renomeado para ${newName}`);
+  };
+
+  const handleCloudMigration = async () => {
+    if (isCloudMode || !supabase) return;
+    
+    const email = prompt("Digite seu e-mail para criar a conta VerdeGrana Cloud:");
+    if (!email) return;
+    const password = prompt("Defina sua senha (mínimo 6 caracteres):");
+    if (!password || password.length < 6) {
+      toast.error("Senha inválida ou muito curta.");
+      return;
+    }
+
+    setBootStage('syncing');
+    try {
+      // 1. Sign up
+      const { data: authData, error: signUpError } = await supabase.auth.signUp({ 
+        email, 
+        password,
+        options: {
+          data: {
+            full_name: email.split('@')[0]
+          }
+        }
+      });
+      
+      if (signUpError) throw signUpError;
+      if (!authData.user) throw new Error("Falha ao criar usuário.");
+
+      // 2. Prepare all data for upload
+      const allData = {
+        transactions: transactions.map(t => ({ ...t, user_id: authData.user!.id })),
+        categories: categories,
+        profiles_list: profilesList
+      };
+
+      // 3. Save to userdata
+      const { error: saveError } = await supabase
+        .from('userdata')
+        .upsert({
+          user_id: authData.user.id,
+          data: allData,
+          updated_at: new Date().toISOString()
+        });
+
+      if (saveError) throw saveError;
+
+      // 4. Update session and state
+      setUser(authData.user);
+      setIsCloudMode(true);
+      setIsTrial(false);
+      localStorage.setItem('verdegrana_is_cloud', 'true');
+      toast.success("Migração para nuvem concluída com sucesso!");
+      
+      setBootStage('ready');
+    } catch (error: any) {
+      console.error('Migration error:', error);
+      toast.error(`Falha na migração: ${error.message}`);
+      setBootStage('ready');
+    }
+  };
+
   const handleAddTransaction = async (data: Omit<Transaction, 'id'>) => {
     const newId = crypto.randomUUID();
     // Module 2: Force activeProfile on new transactions
@@ -1093,6 +1240,10 @@ export default function App() {
         setCategories(cloudCats);
         localStorage.setItem('verdegrana_categories', JSON.stringify(cloudCats));
       }
+      
+      if (userMeta?.data?.profilesList) {
+        setProfilesList(userMeta.data.profilesList);
+      }
 
       // Load Transactions from transactions table
       const { data: cloudTxs, error: txError } = await supabase
@@ -1132,7 +1283,7 @@ export default function App() {
         .from('userdata')
         .upsert({ 
           user_id: userId, 
-          data: { categories: cats },
+          data: { categories: cats, profilesList },
           updated_at: new Date().toISOString()
         });
       
@@ -1315,6 +1466,14 @@ export default function App() {
     };
   }, [isCloudMode, user]);
 
+  // Omni-Sync Engine: Auto-Save to Folder or Cloud on any mutation
+  useEffect(() => {
+    if (bootStage !== 'ready') return;
+    if (folderHandle) {
+      saveToFolder(transactions, categories);
+    }
+  }, [transactions, categories, profilesList, folderHandle, bootStage]);
+
   // Debounced Cloud Sync for Metadata
   useEffect(() => {
     if (!user?.id || !isCloudMode || bootStage !== 'ready' || isDemoMode) return;
@@ -1324,7 +1483,7 @@ export default function App() {
     }, 3000);
 
     return () => clearTimeout(timeout);
-  }, [categories, user?.id, bootStage, isDemoMode]);
+  }, [categories, profilesList, user?.id, bootStage, isDemoMode]);
 
   // --- Handlers ---
   const processImport = useCallback((data: any[]) => {
@@ -1574,8 +1733,7 @@ export default function App() {
   if (bootStage === 'presentation') {
     return (
       <div 
-        onClick={handlePresentationTouch}
-        className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center p-12 text-center select-none cursor-pointer"
+        className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center p-12 text-center select-none"
       >
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-12 max-w-sm flex flex-col items-center">
           <div className="space-y-4">
@@ -1583,30 +1741,85 @@ export default function App() {
              <p className="text-slate-400 text-lg leading-relaxed">Gerencie seus gastos sem que seus dados saiam do seu aparelho.</p>
           </div>
           
-          <div className="flex flex-col gap-8 w-full items-center">
+          <div className="flex flex-col gap-6 w-full items-center">
             <button 
-              onClick={handlePresentationTouch}
-              className="group flex flex-col items-center gap-4 transition-all active:scale-95"
+              onClick={() => setBootStage('auth')}
+              className="w-full py-6 bg-emerald-500 rounded-3xl font-black text-white text-sm uppercase tracking-widest shadow-2xl shadow-emerald-500/20 active:scale-95 transition-all flex items-center justify-center gap-3"
             >
-              <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center animate-bounce group-hover:bg-emerald-500/20">
-                <ShieldCheck className="w-8 h-8 text-emerald-500" />
-              </div>
-              <p className="text-emerald-500 font-black text-xs uppercase tracking-[0.2em] animate-pulse">Entrar com Cloud Sync</p>
+              <Cloud className="w-5 h-5" /> Entrar com Cloud Sync
             </button>
 
-            <div className="h-px w-32 bg-white/5" />
+            <div className="flex items-center gap-4 w-full">
+               <div className="h-px flex-1 bg-white/5" />
+               <span className="text-[10px] font-black text-slate-700 uppercase tracking-widest leading-none">ou</span>
+               <div className="h-px flex-1 bg-white/5" />
+            </div>
 
             <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                handleFileUpload();
-              }}
-              className="flex items-center gap-2 text-slate-500 hover:text-slate-300 font-black text-[10px] uppercase tracking-[0.3em] transition-colors"
+              onClick={() => setIsFolderTutorialOpen(true)}
+              className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-slate-400 text-[11px] uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center justify-center gap-3"
             >
-              <Folder className="w-3 h-3" /> Prosseguir com ficheiros locais
+              <FolderSync className="w-4 h-4" /> Sincronizar Pasta Local
+            </button>
+
+            <button 
+              onClick={() => { setIsTrial(true); setTransactions([]); setBootStage('profile_select'); }}
+              className="text-[10px] text-slate-600 hover:text-slate-400 font-black uppercase tracking-[0.3em] transition-colors mt-2"
+            >
+              Continuar como Visitante (Modo Trial)
             </button>
           </div>
         </motion.div>
+
+        {/* Folder Sync Tutorial Modal */}
+        <AnimatePresence>
+          {isFolderTutorialOpen && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-950/90 backdrop-blur-sm">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                className="max-w-md w-full bg-slate-900 border border-white/10 rounded-[3rem] p-10 space-y-8 shadow-2xl relative"
+              >
+                <button onClick={() => setIsFolderTutorialOpen(false)} className="absolute top-8 right-8 p-2 text-slate-500 hover:text-white"><X className="w-5 h-5"/></button>
+                
+                <div className="space-y-6">
+                   <div className="w-20 h-20 bg-emerald-500/10 rounded-[2rem] flex items-center justify-center mx-auto text-emerald-500">
+                      <FolderSync className="w-10 h-10" />
+                   </div>
+                   <div className="space-y-2 text-center">
+                     <h3 className="text-2xl font-black text-white uppercase tracking-tighter">Sincronização de Pasta</h3>
+                     <p className="text-slate-400 text-sm leading-relaxed px-4">
+                       O VerdeGrana solicitará permissão para acessar uma pasta no seu dispositivo. 
+                       Lá, ele criará e manterá um arquivo <code className="text-emerald-400">.json</code> atualizado em tempo real.
+                     </p>
+                   </div>
+                   
+                   <div className="space-y-4 bg-white/5 p-6 rounded-3xl border border-white/5">
+                      <div className="flex gap-4">
+                         <div className="w-6 h-6 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[10px] font-black flex-shrink-0">1</div>
+                         <p className="text-[11px] text-slate-300 font-bold uppercase tracking-widest leading-relaxed">Seus dados nunca sairão do seu aparelho.</p>
+                      </div>
+                      <div className="flex gap-4">
+                         <div className="w-6 h-6 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center text-[10px] font-black flex-shrink-0">2</div>
+                         <p className="text-[11px] text-slate-300 font-bold uppercase tracking-widest leading-relaxed">Você pode exportar ou mover a pasta quando quiser.</p>
+                      </div>
+                   </div>
+                </div>
+
+                <div className="space-y-4 pt-4">
+                  <button 
+                    onClick={handleFolderSelection}
+                    className="w-full py-6 bg-emerald-500 rounded-2xl font-black text-white text-sm uppercase tracking-widest shadow-xl shadow-emerald-500/20 active:scale-95 transition-all"
+                  >
+                    ENTENDI, SELECIONAR PASTA
+                  </button>
+                  <p className="text-[9px] text-slate-600 font-bold uppercase tracking-widest text-center">A disponibilidade depende do seu navegador.</p>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
@@ -1702,48 +1915,62 @@ export default function App() {
       <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6">
         <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full glass p-10 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-10">
           <div className="space-y-4">
-            <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20">
+            <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20 shadow-2xl shadow-emerald-500/20">
                <UserCheck className="w-12 h-12" />
             </div>
-            <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">Qual Perfil?</h1>
-            <p className="text-slate-400 text-sm">Escolha o ambiente que deseja acessar hoje.</p>
+            <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">Quem está usando?</h1>
+            <p className="text-slate-400 text-sm">Selecione seu perfil para acessar o VerdeGrana.</p>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+          <div className="grid grid-cols-2 gap-4 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar">
             {allProfiles.map(p => (
               <button
                 key={p}
                 onClick={async () => {
                   setActiveProfile(p);
-                  setBootStage('ready');
-                  toast.success(`Acessando perfil: ${p}`);
+                  setBootStage('welcome');
+                  toast.success(`Bem-vindo, ${p}!`);
                 }}
-                className="w-full py-5 bg-white/5 border border-white/10 rounded-3xl font-black text-white text-sm uppercase flex items-center justify-between px-8 hover:bg-emerald-500 hover:border-emerald-500 transition-all active:scale-95 group"
+                className="aspect-square bg-white/5 border border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 hover:bg-emerald-500/10 hover:border-emerald-500/30 transition-all active:scale-95 group"
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-white/20">
-                    <User className="w-4 h-4" />
-                  </div>
-                  {p}
+                <div className="w-16 h-16 rounded-[1.5rem] bg-emerald-500/10 flex items-center justify-center group-hover:bg-emerald-500 group-hover:text-white transition-all">
+                  <User className="w-8 h-8 text-emerald-500 group-hover:text-white" />
                 </div>
-                <ChevronRight className="w-5 h-5 opacity-50" />
+                <span className="text-xs font-black text-white uppercase tracking-widest">{p}</span>
               </button>
             ))}
+            
+            <button 
+              onClick={async () => {
+                const name = prompt('Nome do novo perfil:');
+                if (name) {
+                  if (profilesList.includes(name)) {
+                    toast.error('Este perfil já existe.');
+                    return;
+                  }
+                  setProfilesList(prev => [...prev, name]);
+                  setActiveProfile(name);
+                  setBootStage('welcome');
+                  toast.success(`Perfil ${name} criado!`);
+                }
+              }}
+              className="aspect-square bg-emerald-500/5 border border-dashed border-emerald-500/30 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 hover:bg-emerald-500/10 transition-all active:scale-95"
+            >
+              <div className="w-16 h-16 rounded-[1.5rem] bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                <Plus className="w-8 h-8" />
+              </div>
+              <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Novo Perfil</span>
+            </button>
           </div>
 
-          <button 
-            onClick={async () => {
-              const name = prompt('Nome do novo perfil:');
-              if (name && !allProfiles.includes(name)) {
-                setActiveProfile(name);
-                setBootStage('ready');
-                toast.success(`Novo perfil criado: ${name}`);
-              }
-            }}
-            className="text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-white transition-colors"
-          >
-            + Criar novo ambiente
-          </button>
+          <div className="pt-4">
+             <button 
+              onClick={handleLogout}
+              className="text-[10px] text-slate-600 font-bold uppercase tracking-widest hover:text-slate-400 transition-colors"
+             >
+                SAIR DA CONTA
+             </button>
+          </div>
         </motion.div>
       </div>
     );
@@ -2542,224 +2769,265 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
             )}
 
             {activeTab === 'settings' && (
-              <motion.div key="set" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
-                <Card className="p-10 flex flex-col gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl">{isCloudMode ? <Cloud /> : <Folder />}</div>
-                    <h3 className="text-xl font-bold text-white tracking-tighter">Gerenciador de Progressos (Perfis)</h3>
-                  </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">Organize múltiplas frentes financeiras (Ex: Pessoal, Negócios). Selecione o perfil ativo para filtrar todo o painel.</p>
-                  
-                  <div className="space-y-4">
-                    <div className="p-4 bg-white/5 rounded-2xl border border-white/10 space-y-2">
-                       <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Perfil Ativo Atualmente</p>
-                       <div className="flex items-center justify-between">
-                          <p className="text-lg font-black text-white truncate">{activeProfile}</p>
-                          <div className="px-2 py-1 bg-emerald-500/10 rounded border border-emerald-500/30 text-[8px] font-black text-emerald-500 uppercase">Selecionado</div>
-                       </div>
+              <motion.div key="set" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-5xl mx-auto space-y-8">
+                
+                {/* Profile Management Section */}
+                <Card className="p-10 flex flex-col gap-8">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl"><Users className="w-6 h-6" /></div>
+                      <div className="space-y-1">
+                        <h3 className="text-xl font-bold text-white tracking-tighter uppercase">Gerenciador de Perfis</h3>
+                        <p className="text-slate-500 text-xs">Isolamento total de orçamentos e históricos</p>
+                      </div>
                     </div>
-
-                    <div className="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
-                       {allProfiles.map(p => (
-                         <button 
-                          key={p}
-                          onClick={() => {
-                            setActiveProfile(p);
-                            toast.success(`Perfil alternado para: ${p}`);
-                          }}
-                          className={cn(
-                            "w-full p-4 rounded-xl text-left transition-all border flex items-center justify-between group",
-                            activeProfile === p ? "bg-emerald-500 text-white border-emerald-400" : "bg-white/5 border-white/5 hover:border-white/20 text-slate-400"
-                          )}
-                         >
-                            <span className="font-bold text-xs uppercase tracking-widest">{p}</span>
-                            {activeProfile === p ? <UserCheck className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />}
-                         </button>
-                       ))}
-                    </div>
-
                     <button 
                       onClick={() => {
-                        const name = prompt('Nome do novo progresso/perfil:');
+                        const name = prompt('Nome do novo perfil:');
                         if (name && name.trim()) {
+                          if (profilesList.includes(name.trim())) {
+                            toast.error('Este perfil já existe.');
+                            return;
+                          }
+                          setProfilesList(p => [...p, name.trim()]);
                           setActiveProfile(name.trim());
-                          toast.success(`Progresso "${name}" criado e ativado!`);
+                          toast.success(`Perfil "${name}" criado!`);
                         }
                       }}
-                      className="w-full py-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 font-black uppercase text-xs tracking-widest hover:bg-emerald-500/20 transition-all flex items-center justify-center gap-2"
+                      className="p-4 bg-emerald-500/10 text-emerald-500 rounded-2xl hover:bg-emerald-500 hover:text-white transition-all flex items-center gap-2"
                     >
-                      <Plus className="w-4 h-4" /> Criar Novo Progresso
+                      <Plus className="w-5 h-5" />
                     </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                     {profilesList.map(p => (
+                       <div 
+                         key={p}
+                         className={cn(
+                           "p-6 rounded-[2rem] border transition-all flex flex-col gap-4 relative group",
+                           activeProfile === p ? "bg-emerald-500/10 border-emerald-500/50" : "bg-white/5 border-white/5 hover:border-white/10"
+                         )}
+                       >
+                          <div className="flex items-center justify-between">
+                             <div className="flex items-center gap-3">
+                               <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center", activeProfile === p ? "bg-emerald-500 text-white" : "bg-white/5 text-slate-500")}>
+                                  <User className="w-5 h-5" />
+                               </div>
+                               <div>
+                                 <p className="text-xs font-black text-white uppercase tracking-widest truncate max-w-[120px]">{p}</p>
+                                 {activeProfile === p && <p className="text-[8px] font-black text-emerald-500 uppercase">Ativo</p>}
+                               </div>
+                             </div>
+                             
+                             <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={() => handleRenameProfile(p)}
+                                  className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-slate-400"
+                                >
+                                  <Edit2 className="w-4 h-4" />
+                                </button>
+                                {profilesList.length > 1 && (
+                                  <button 
+                                    onClick={() => {
+                                      if (confirm(`Excluir o perfil "${p}"? Todos os dados vinculados serão inacessíveis.`)) {
+                                        setProfilesList(prev => prev.filter(item => item !== p));
+                                        if (activeProfile === p) setActiveProfile(profilesList.find(item => item !== p) || 'Principal');
+                                      }
+                                    }}
+                                    className="p-2 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg text-rose-500"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                             </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 mt-2">
+                             <button
+                               onClick={() => {
+                                 setActiveProfile(p);
+                                 toast.success(`Perfil ${p} selecionado.`);
+                               }}
+                               className={cn(
+                                 "flex-1 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all",
+                                 activeProfile === p ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : "bg-white/5 text-slate-500 hover:bg-white/10"
+                               )}
+                             >
+                                Selecionar
+                             </button>
+                          </div>
+                       </div>
+                     ))}
                   </div>
                 </Card>
 
-                <Card className="p-10 flex flex-col gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl">{isCloudMode ? <Cloud /> : <Folder />}</div>
-                    <h3 className="text-xl font-bold text-white">{isCloudMode ? 'Sincronização na Nuvem' : 'Modo Ficheiro Local'}</h3>
-                  </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">
-                    {isCloudMode 
-                      ? 'Seus dados estão protegidos e sincronizados em tempo real com sua conta no Supabase. Isso garante acesso multiplataforma.' 
-                      : 'Seus dados estão sendo gerenciados localmente. Lembre-se de baixar backups regulares (.json) para evitar perdas se limpar o navegador.'}
-                  </p>
-                  <div className="mt-auto bg-emerald-500/5 p-4 rounded-2xl border border-emerald-500/10">
-                     <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Status do Armazenamento</p>
-                     <p className={cn(
-                       "text-sm font-bold truncate transition-all",
-                       isCloudMode ? "text-emerald-500" : "text-slate-300"
-                     )}>
-                       {isCloudMode ? `Nuvem: ${user?.email}` : 'Ficheiro Local (Offline)'}
-                     </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {/* Account / Cloud Section */}
+                  <Card className="p-10 flex flex-col gap-6 relative overflow-hidden">
+                    <div className="flex items-center gap-4 relative z-10">
+                      <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl">{isCloudMode ? <Cloud /> : <FolderSync />}</div>
+                      <div className="space-y-1">
+                        <h3 className="text-xl font-black text-white uppercase tracking-tighter">{isCloudMode ? 'Conta & Cloud Sync' : 'Armazenamento Local'}</h3>
+                        <p className={cn("text-[10px] font-black uppercase tracking-widest", isCloudMode ? "text-emerald-500" : "text-slate-500")}>
+                          {isCloudMode ? 'Dados Seguros na Nuvem' : 'Apenas neste aparelho'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4 relative z-10 flex-1">
+                      {isCloudMode ? (
+                        <div className="space-y-4">
+                           <div className="bg-white/5 p-6 rounded-3xl border border-white/5 space-y-4">
+                              <div className="flex items-center gap-4">
+                                 <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                                    <UserCheck className="w-6 h-6" />
+                                 </div>
+                                 <div className="overflow-hidden">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">E-mail Vinculado</p>
+                                    <p className="text-sm font-bold text-white truncate">{user?.email}</p>
+                                 </div>
+                              </div>
+                              <div className="pt-2">
+                                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                                   <div className="h-full bg-emerald-500 animate-pulse" style={{ width: '100%' }} />
+                                </div>
+                                <p className="text-[9px] text-emerald-500/60 font-medium uppercase mt-2">Sincronização em tempo real ativa</p>
+                              </div>
+                           </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-6">
+                           <p className="text-slate-400 text-sm leading-relaxed">
+                              Você está usando o <strong>Modo Local</strong>. Seus dados estão salvos apenas no seu dispositivo/navegador. 
+                              {folderHandle ? " Sincronizado com sua pasta local." : " Recomendamos migrar para a Nuvem para evitar perdas."}
+                           </p>
+
+                           {!folderHandle && (
+                              <button 
+                                onClick={handleFolderSelection}
+                                className="w-full py-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 font-black uppercase text-xs hover:bg-emerald-500/20 transition-all flex items-center justify-center gap-2"
+                              >
+                                <FolderSync className="w-4 h-4" /> Ativar Sincronização de Pasta
+                              </button>
+                           )}
+
+                           <div className="bg-emerald-500/5 p-6 rounded-3xl border border-dashed border-emerald-500/30 space-y-4">
+                              <h4 className="text-white text-xs font-black uppercase tracking-widest">Migrar para a Nuvem</h4>
+                              <p className="text-[11px] text-slate-400">Proteja seus dados, use em múltiplos aparelhos e nunca mais se preocupe com backups manuais.</p>
+                              <button 
+                                onClick={handleCloudMigration}
+                                className="w-full py-5 bg-emerald-500 rounded-2xl text-white font-black uppercase text-xs tracking-[0.2em] shadow-xl shadow-emerald-500/20 active:scale-95 transition-all"
+                              >
+                                Começar Migração
+                              </button>
+                           </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <button 
+                      onClick={handleLocalExport}
+                      className="flex items-center justify-center gap-3 py-4 bg-white/5 border border-white/10 rounded-xl text-slate-400 font-bold hover:bg-white/10 transition-all text-[10px] uppercase tracking-widest"
+                    >
+                      <Download className="w-4 h-4" /> Exportar Backup JSON
+                    </button>
+                  </Card>
+
+                  {/* UI Scale / Appearance */}
+                  <Card className="p-10 flex flex-col gap-6">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-2xl"><Monitor className="w-6 h-6" /></div>
+                      <div className="space-y-1">
+                        <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Aparência da UI</h3>
+                        <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">Escalabilidade de Interface</p>
+                      </div>
+                    </div>
+                    <p className="text-slate-400 text-sm leading-relaxed">Ajuste o zoom da interface para otimizar o espaço em telas pequenas ou visualização em monitores grandes.</p>
+                    <div className="grid grid-cols-1 gap-3 mt-2">
+                      {[
+                        { label: 'Compacto', value: 85, desc: 'Ideal para muitos dados' },
+                        { label: 'Menor', value: 90, desc: 'Foco em densidade' },
+                        { label: 'Padrão', value: 100, desc: 'Configuração original' }
+                      ].map((scale) => (
+                        <button
+                          key={scale.value}
+                          onClick={() => setUiScale(scale.value)}
+                          className={cn(
+                            "group p-4 rounded-2xl transition-all border flex items-center justify-between",
+                            uiScale === scale.value 
+                              ? "bg-emerald-500 border-emerald-400 text-white shadow-lg shadow-emerald-500/30" 
+                              : "bg-white/5 border-white/5 hover:border-white/20 text-slate-400"
+                          )}
+                        >
+                          <div className="text-left">
+                            <p className="font-black text-[11px] uppercase tracking-widest">{scale.label}</p>
+                            <p className={cn("text-[9px] font-bold uppercase tracking-tight", uiScale === scale.value ? "text-white/60" : "text-slate-600")}>{scale.desc}</p>
+                          </div>
+                          <p className="text-xs font-black">{scale.value}%</p>
+                        </button>
+                      ))}
+                    </div>
+                  </Card>
+                </div>
+
+                {/* Data Cleanup Card */}
+                <Card className="p-10 flex flex-col md:flex-row items-center gap-8 bg-rose-500/5 border-rose-500/20">
+                  <div className="p-6 bg-rose-500/10 text-rose-500 rounded-[2rem] flex-shrink-0"><Trash2 className="w-10 h-10" /></div>
+                  <div className="flex-1 space-y-2 text-center md:text-left">
+                    <h3 className="text-2xl font-black text-rose-500 uppercase tracking-tighter">Limpeza Profunda</h3>
+                    <p className="text-rose-500/60 text-sm font-medium">Isso apagará permanentemente todos os registros, perfis e configurações. Não pode ser desfeito.</p>
                   </div>
                   <button 
                     onClick={() => {
+                      if (isTrial) {
+                        toast.error('Função indisponível no modo Trial.');
+                        return;
+                      }
                       setConfirmModal({
                         open: true,
-                        title: 'Exportar Backup Local?',
-                        description: 'Um arquivo .json será baixado com todos os seus registros atuais.',
-                        action: handleLocalExport
+                        title: 'APAGAR TUDO?',
+                        description: 'Todos os seus dados na nuvem e localmente serão destruídos.',
+                        action: async () => {
+                          if (user && supabase && isCloudMode) {
+                              await supabase.from('userdata').delete().eq('user_id', user.id);
+                          }
+                          localStorage.clear();
+                          toast.success('Reiniciando sistema...');
+                          setTimeout(() => window.location.reload(), 1500);
+                        }
                       });
                     }}
-                    className="flex items-center justify-center gap-3 py-4 bg-emerald-600/10 border border-emerald-500/30 rounded-xl text-emerald-400 font-bold hover:bg-emerald-600 hover:text-white transition-all text-sm"
+                    className="px-10 py-5 bg-rose-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-rose-500 transition-all active:scale-95 shadow-xl shadow-rose-600/20"
                   >
-                    <Download className="w-4 h-4" /> Exportar Backup (.json)
+                    Resetar VerdeGrana
                   </button>
                 </Card>
 
-                <Card className="p-10 flex flex-col gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-2xl"><Monitor /></div>
-                    <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Aparência</h3>
-                  </div>
-                  <p className="text-slate-400 text-sm leading-relaxed">Ajuste o tamanho da interface para caber mais informações na tela.</p>
-                  <div className="flex flex-row gap-2 mt-2">
-                    {[
-                      { label: 'Compacto', value: 85 },
-                      { label: 'Menor', value: 90 },
-                      { label: 'Padrão', value: 100 }
-                    ].map((scale) => (
-                      <button
-                        key={scale.value}
-                        onClick={() => setUiScale(scale.value)}
-                        className={cn(
-                          "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
-                          uiScale === scale.value 
-                            ? "bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-500/20" 
-                            : "bg-white/5 text-slate-500 border-white/10 hover:bg-white/10"
-                        )}
-                      >
-                        {scale.label} ({scale.value}%)
-                      </button>
-                    ))}
-                  </div>
-                </Card>
-
-                <Card className="p-10 flex flex-col gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 bg-rose-500/20 text-rose-400 rounded-2xl"><Trash2 /></div>
-                    <h3 className="text-xl font-bold text-white uppercase tracking-tighter">Gerenciamento de Dados</h3>
-                  </div>
-                  <div className="space-y-4">
-                    <button 
-                      onClick={() => {
-                        if (isTrial) {
-                          toast.error('Função indisponível no modo Trial. Sincronize seus dados para liberar.');
-                          return;
-                        }
+                {/* Logout Card */}
+                <Card className="p-10 flex items-center justify-between bg-slate-900 border-white/5">
+                   <div className="flex items-center gap-6">
+                      <div className="p-4 bg-white/5 text-slate-500 rounded-3xl"><LogOut className="w-6 h-6" /></div>
+                      <div>
+                        <h4 className="text-white font-black uppercase tracking-tighter text-xl">Sair da Sessão</h4>
+                        <p className="text-slate-500 text-xs">Desconectar conta deste dispositivo</p>
+                      </div>
+                   </div>
+                   <button 
+                    onClick={() => {
                         setConfirmModal({
                           open: true,
-                          title: 'LIMPAR TODOS OS DADOS?',
-                          description: 'ATENÇÃO: Isso apagará TODOS os dados localmente e no arquivo sincronizado permanentemente. Esta ação não pode ser desfeita.',
-                          action: async () => {
-                            const emptySchema = {
-                              transactions: [],
-                              categories: DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }))
-                            };
-                            
-                            if (user && supabase && isCloudMode) {
-                              try {
-                                await supabase
-                                  .from('userdata')
-                                  .delete()
-                                  .eq('user_id', user.id);
-                              } catch (e) {
-                                console.error('Falha ao limpar nuvem:', e);
-                              }
-                            }
-                            
-                            setTransactions([]);
-                            setCategories(DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
-                            localStorage.clear();
-                            sessionStorage.clear();
-                            toast.success('Todos os dados foram apagados.');
-                            setTimeout(() => window.location.reload(), 1500);
-                          }
+                          title: 'Sair da Conta?',
+                          description: 'Sua sessão será encerrada com segurança.',
+                          action: handleLogout
                         });
-                      }}
-                      className="w-full flex items-center justify-between p-6 bg-rose-500/10 text-rose-400 rounded-2xl hover:bg-rose-500/20 transition-all border border-rose-500/30"
-                    >
-                      <span className="font-bold text-sm">Limpar Todos os Dados</span>
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
+                    }}
+                    className="px-8 py-4 bg-white/5 border border-white/10 rounded-2xl text-slate-400 font-bold hover:bg-rose-500 hover:text-white hover:border-rose-500 transition-all"
+                   >
+                     Logout
+                   </button>
                 </Card>
 
-                <Card className="col-span-1 md:col-span-2 p-10 space-y-8 relative overflow-hidden group">
-                  <div className="absolute top-0 right-0 p-10 opacity-[0.03] group-hover:opacity-[0.08] transition-opacity"><Ghost className="w-40 h-40" /></div>
-                  <div className="flex items-center gap-6 relative">
-                    <div className="p-4 bg-emerald-500/20 text-emerald-400 rounded-[2rem]"><User className="w-8 h-8" /></div>
-                    <div className="space-y-1">
-                      <h3 className="text-3xl font-black text-white tracking-tighter uppercase">Sobre o VerdeGrana</h3>
-                      <p className="text-emerald-500 font-bold uppercase text-[10px] tracking-widest">Luiz Gustavo Andrade Santos</p>
-                    </div>
-                  </div>
-                  <div className="space-y-6 relative max-w-4xl">
-                    <p className="text-lg text-slate-300 font-medium leading-relaxed">
-                      Olá! Sou Luiz Gustavo Andrade Santos, criador do VerdeGrana. Desenvolvi este aplicativo para tentar controlar meus próprios gastos (especialmente com o uso de ferramentas de IA), unindo a precisão da visão contábil à praticidade da tecnologia. Este é um projeto vivo e em constante evolução, e estou à inteira disposição para implementar atualizações e melhorias imediatamente.
-                    </p>
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 pt-2">
-                       <a href="mailto:roogxbox@gmail.com" className="px-8 py-4 bg-emerald-600 rounded-2xl font-black text-white hover:bg-emerald-500 transition-all flex items-center gap-3">
-                         <Mail className="w-6 h-6" /> roogxbox@gmail.com
-                       </a>
-                    </div>
-                  </div>
-                </Card>
-
-                <Card className="col-span-1 md:col-span-2 p-10 space-y-8 bg-black/20 border-rose-500/20 relative overflow-hidden">
-                  <div className="flex items-center gap-6 relative">
-                    <div className="p-4 bg-rose-500/10 text-rose-500 rounded-[2rem]"><LogOut className="w-8 h-8" /></div>
-                    <div className="space-y-1">
-                      <h3 className="text-3xl font-black text-white tracking-tighter uppercase">Sair do VerdeGrana</h3>
-                      <p className="text-rose-500/60 font-bold uppercase text-[10px] tracking-widest">Encerramento de Sessão</p>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <button 
-                      onClick={async () => {
-                         setConfirmModal({
-                           open: true,
-                           title: 'Encerrar Sessão',
-                           description: 'Isso desconectará sua conta e limpará os dados locais do dispositivo.',
-                           action: handleLogout
-                         });
-                      }}
-                      className="px-8 py-6 bg-emerald-600 rounded-3xl font-black text-white hover:bg-emerald-500 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-xl shadow-emerald-600/20"
-                    >
-                      <LogOut className="w-6 h-6" /> Encerrar Sessão
-                    </button>
-                    
-                    <button 
-                      onClick={() => {
-                        window.location.reload();
-                      }}
-                      className="px-8 py-6 bg-white/5 border border-white/10 rounded-3xl font-black text-slate-400 hover:bg-rose-500/10 hover:text-rose-400 hover:border-rose-500/30 transition-all active:scale-95 flex items-center justify-center gap-3"
-                    >
-                      <RefreshCw className="w-6 h-6 text-rose-500/60" /> Reiniciar App
-                    </button>
-                  </div>
-                </Card>
               </motion.div>
             )}
 

@@ -687,12 +687,16 @@ export default function App() {
     description: string;
     action: () => void;
   }>({ open: false, title: '', description: '', action: () => {} });
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>(() => {
+    const saved = localStorage.getItem('verdegrana_transactions');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [history, setHistory] = useState<Transaction[][]>([]);
   const [historyPointer, setHistoryPointer] = useState(-1);
-  const [categories, setCategories] = useState<Category[]>(
-    DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }))
-  );
+  const [categories, setCategories] = useState<Category[]>(() => {
+    const saved = localStorage.getItem('verdegrana_categories');
+    return saved ? JSON.parse(saved) : DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c }));
+  });
   
   // Edge-Swipe Logic
   const touchStart = useRef<{ x: number, y: number } | null>(null);
@@ -842,6 +846,15 @@ export default function App() {
     }
   }, [transactions, history.length]);
 
+  // Sync state to LocalStorage (Instant Persistence)
+  useEffect(() => {
+    localStorage.setItem('verdegrana_transactions', JSON.stringify(transactions));
+  }, [transactions]);
+
+  useEffect(() => {
+    localStorage.setItem('verdegrana_categories', JSON.stringify(categories));
+  }, [categories]);
+
   // Sync state to IDB (Instant)
   useEffect(() => {
     if (activeTab === 'reports') {
@@ -949,20 +962,19 @@ export default function App() {
     });
 
     if (isCloudMode && user && supabase) {
-      try {
-        await supabase.from('transactions').insert([{
-          id: newId,
-          user_id: user.id,
-          date: data.date,
-          description: data.desc,
-          category: data.category,
-          type: data.type,
-          amount: data.value,
-          profile_name: data.profile_name
-        }]);
-      } catch (err) {
-        console.error("Erro ao sincronizar inserção:", err);
-      }
+      // Background Sync
+      supabase.from('transactions').insert([{
+        id: newId,
+        user_id: user.id,
+        date: data.date,
+        description: data.desc,
+        category: data.category,
+        type: data.type,
+        amount: data.value,
+        profile_name: data.profile_name
+      }]).then(({ error }) => {
+        if (error) console.error("Erro na sincronização em nuvem (insert):", error);
+      });
     }
     toast.success('Lançamento adicionado!');
   };
@@ -975,18 +987,17 @@ export default function App() {
     });
 
     if (isCloudMode && user && supabase) {
-      try {
-        await supabase.from('transactions').update({
-          date: data.date,
-          description: data.desc,
-          category: data.category,
-          type: data.type,
-          amount: data.value,
-          profile_name: data.profile_name
-        }).eq('id', id);
-      } catch (err) {
-        console.error("Erro ao sincronizar atualização:", err);
-      }
+      // Background Sync
+      supabase.from('transactions').update({
+        date: data.date,
+        description: data.desc,
+        category: data.category,
+        type: data.type,
+        amount: data.value,
+        profile_name: data.profile_name
+      }).eq('id', id).then(({ error }) => {
+        if (error) console.error("Erro na sincronização em nuvem (update):", error);
+      });
     }
   };
 
@@ -998,16 +1009,15 @@ export default function App() {
     });
 
     if (isCloudMode && user && supabase) {
-      try {
-        await supabase.from('transactions').delete().in('id', ids);
-      } catch (err) {
-        console.error("Erro ao sincronizar deleção:", err);
-      }
+      // Background Sync
+      supabase.from('transactions').delete().in('id', ids).then(({ error }) => {
+        if (error) console.error("Erro na sincronização em nuvem (delete):", error);
+      });
     }
   };
 
   const fetchCloudData = async (userId: string) => {
-    if (!supabase) return;
+    if (!supabase) return { transactions: [] };
     try {
       setSyncStatus('saving');
       // Load Categories and Metadata from userdata
@@ -1018,7 +1028,9 @@ export default function App() {
         .single();
       
       if (userMeta?.data?.categories) {
-        setCategories(userMeta.data.categories);
+        const cloudCats = userMeta.data.categories;
+        setCategories(cloudCats);
+        localStorage.setItem('verdegrana_categories', JSON.stringify(cloudCats));
       }
 
       // Load Transactions from transactions table
@@ -1028,23 +1040,26 @@ export default function App() {
         .eq('user_id', userId);
       
       if (txError) throw txError;
+      
+      const mappedTxs: Transaction[] = cloudTxs ? cloudTxs.map((t: any) => ({
+        id: t.id,
+        date: t.date,
+        desc: t.description,
+        value: t.amount,
+        category: t.category,
+        type: t.type,
+        profile_name: t.profile_name || 'Principal'
+      })) : [];
 
-      if (cloudTxs) {
-        const mappedTxs: Transaction[] = cloudTxs.map((t: any) => ({
-          id: t.id,
-          date: t.date,
-          desc: t.description,
-          value: t.amount,
-          category: t.category,
-          type: t.type,
-          profile_name: t.profile_name || 'Principal'
-        }));
-        setTransactions(mappedTxs);
-      }
+      // Reconciliation: Overwrite localStorage with fresh cloud data
+      localStorage.setItem('verdegrana_transactions', JSON.stringify(mappedTxs));
+      setTransactions(mappedTxs);
       setSyncStatus('synced');
+      return { transactions: mappedTxs };
     } catch (e: any) {
       console.error("Erro ao buscar dados na nuvem:", e);
       setSyncStatus('error');
+      return { transactions: [] };
     }
   };
 
@@ -1619,14 +1634,14 @@ export default function App() {
                   </div>
                 ) : null}
                 
-               {user && (
+                {user && isCloudMode && (
                   <div className={cn(
                     "flex items-center gap-1 text-[10px] font-bold ml-2 transition-all",
                     syncStatus === 'saving' ? "text-amber-500 animate-pulse" : 
                     syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
                   )}>
                     {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
-                    {syncStatus === 'saving' ? 'SINCRONIZANDO...' : 'NUVEM ATIVA'}
+                    {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'ERRO DE CONEXÃO'}
                   </div>
                 )}
               </div>

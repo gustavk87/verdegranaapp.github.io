@@ -674,10 +674,10 @@ const CategoryDonutSection = ({
   }
 };
 
-type BootStage = 'splash' | 'presentation' | 'auth' | 'welcome' | 'ready';
+type BootStage = 'splash' | 'presentation' | 'auth' | 'welcome' | 'profile_select' | 'ready' | 'syncing';
 
 export default function App() {
-  const [bootStage, setBootStage] = useState<BootStage>('splash');
+  const [bootStage, setBootStage] = useState<BootStage>('syncing');
   const [user, setUser] = useState<any>(null);
   const [isCloudMode, setIsCloudMode] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
@@ -892,7 +892,7 @@ export default function App() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      setBootStage('presentation');
+      setBootStage(prev => (prev === 'splash' ? 'presentation' : prev));
     }, 4500);
     return () => clearTimeout(timer);
   }, []);
@@ -977,7 +977,8 @@ export default function App() {
   // --- Handlers ---
   const handleAddTransaction = async (data: Omit<Transaction, 'id'>) => {
     const newId = crypto.randomUUID();
-    const newTx: Transaction = { ...data, id: newId };
+    // Module 2: Force activeProfile on new transactions
+    const newTx: Transaction = { ...data, id: newId, profile_name: activeProfile };
     
     setTransactions(prev => {
       const next = [...prev, newTx];
@@ -995,8 +996,8 @@ export default function App() {
         category: data.category,
         type: data.type,
         amount: data.value,
-        profile_name: data.profile_name
-      }]).then(({ error }) => {
+        profile_name: activeProfile
+      }]).then(({ error }: { error: any }) => {
         if (error) console.error("Erro na sincronização em nuvem (insert):", error);
       });
     }
@@ -1161,9 +1162,7 @@ export default function App() {
   // --- Initial Boot & Persistence ---
   useEffect(() => {
     const boot = async () => {
-      // Immediate hydration is handled by useState initiators.
-      
-      // Supabase listener
+      // Module 1: Silent Boot
       if (supabase) {
         try {
           const { data: { session } } = await supabase.auth.getSession();
@@ -1171,9 +1170,22 @@ export default function App() {
             setUser(session.user);
             setIsCloudMode(true);
             setSyncStatus('saving');
-            await fetchCloudData(session.user.id);
+            const data = await fetchCloudData(session.user.id);
             setSyncStatus('synced');
-            setBootStage('ready'); // Auto-login skip to dashboard
+
+            // Module 1: Profile Gateway
+            const txs = data.transactions || [];
+            const profiles = Array.from(new Set(txs.map((t: any) => t.profile_name || 'Principal')));
+            if (!profiles.includes('Principal')) profiles.push('Principal');
+            
+            if (profiles.length > 1) {
+              setBootStage('profile_select');
+            } else {
+              setActiveProfile(profiles[0]);
+              setBootStage('ready');
+            }
+          } else {
+            setBootStage('splash');
           }
           
           supabase.auth.onAuthStateChange((_event: any, session: any) => {
@@ -1188,11 +1200,34 @@ export default function App() {
           });
         } catch (e) {
           console.error("Erro no boot de autenticação:", e);
+          setBootStage('splash');
         }
+      } else {
+        setBootStage('splash');
       }
     };
     boot();
   }, []);
+
+  // Module 3: Real-time Sync - Channels
+  useEffect(() => {
+    if (!supabase || !isCloudMode || !user) return;
+
+    const channel = supabase.channel('public:transactions')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, (payload: any) => {
+        console.log('Real-time change detected:', payload);
+        toast.info('⚡ Alteração na nuvem detectada. Atualizando...', {
+          icon: <RefreshCw className="w-4 h-4 animate-spin" />,
+          duration: 3000
+        });
+        fetchCloudData(user.id);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isCloudMode, user]);
 
   // Debounced Cloud Sync for Metadata
   useEffect(() => {
@@ -1244,6 +1279,10 @@ export default function App() {
 
     setCategories(newCategories);
   }, [categories, transactions, activeProfile]);
+
+  useEffect(() => {
+    localStorage.setItem('verdegrana_active_profile', activeProfile);
+  }, [activeProfile]);
 
   // Calculations & Filters
   const currentTransactions = useMemo(() => {
@@ -1392,10 +1431,27 @@ export default function App() {
   const periodDetailsTransactions = useMemo(() => {
     if (!selectedPeriod) return [];
     const date = new Date(selectedPeriod).toISOString().split('T')[0];
-    return transactions.filter(t => t.date === date);
-  }, [transactions, selectedPeriod]);
+    return currentTransactions.filter(t => t.date === date);
+  }, [currentTransactions, selectedPeriod]);
 
   // --- UI Renders ---
+
+  // Module 1: Silent Boot - Loading Overlay
+  if (bootStage === 'syncing') {
+    return (
+      <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center space-y-6">
+        <motion.div 
+          animate={{ rotate: 360 }} 
+          transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+          className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full shadow-2xl shadow-emerald-500/20"
+        />
+        <div className="space-y-2 text-center">
+          <p className="text-white font-black text-sm uppercase tracking-[0.3em] animate-pulse">Sincronizando com a nuvem...</p>
+          <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest leading-none">Aguarde um instante</p>
+        </div>
+      </div>
+    );
+  }
 
   // Splash Screen
   if (bootStage === 'splash') {
@@ -1525,7 +1581,7 @@ export default function App() {
                   <div className="h-px bg-white/5 w-full my-2" />
                   <button 
                     onClick={() => {
-                       const el = document.getElementById('localFileInput');
+                       const el = document.getElementById('fileInput');
                        if (el) el.click();
                     }}
                     className="flex items-center justify-center gap-2 text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-white transition-colors"
@@ -1536,6 +1592,58 @@ export default function App() {
             </div>
           </motion.div>
         )}
+      </div>
+    );
+  }
+
+  if (bootStage === 'profile_select') {
+    return (
+      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center p-6">
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full glass p-10 rounded-[4rem] border border-white/10 shadow-2xl text-center space-y-10">
+          <div className="space-y-4">
+            <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto text-emerald-500 border border-emerald-500/20">
+               <UserCheck className="w-12 h-12" />
+            </div>
+            <h1 className="text-4xl font-black text-white tracking-tighter uppercase leading-none">Qual Perfil?</h1>
+            <p className="text-slate-400 text-sm">Escolha o ambiente que deseja acessar hoje.</p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+            {allProfiles.map(p => (
+              <button
+                key={p}
+                onClick={async () => {
+                  setActiveProfile(p);
+                  setBootStage('ready');
+                  toast.success(`Acessando perfil: ${p}`);
+                }}
+                className="w-full py-5 bg-white/5 border border-white/10 rounded-3xl font-black text-white text-sm uppercase flex items-center justify-between px-8 hover:bg-emerald-500 hover:border-emerald-500 transition-all active:scale-95 group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-white/20">
+                    <User className="w-4 h-4" />
+                  </div>
+                  {p}
+                </div>
+                <ChevronRight className="w-5 h-5 opacity-50" />
+              </button>
+            ))}
+          </div>
+
+          <button 
+            onClick={async () => {
+              const name = prompt('Nome do novo perfil:');
+              if (name && !allProfiles.includes(name)) {
+                setActiveProfile(name);
+                setBootStage('ready');
+                toast.success(`Novo perfil criado: ${name}`);
+              }
+            }}
+            className="text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-white transition-colors"
+          >
+            + Criar novo ambiente
+          </button>
+        </motion.div>
       </div>
     );
   }
@@ -1595,7 +1703,7 @@ export default function App() {
       <Toaster position="top-right" theme="dark" richColors />
       <input 
         type="file" 
-        id="localFileInput"
+        id="fileInput"
         ref={localFileRef} 
         onChange={handleLocalFileLoad} 
         accept=".json" 
@@ -1679,17 +1787,17 @@ export default function App() {
                 <div className="flex items-center gap-1 text-[10px] font-bold ml-2 transition-all">
                   {isCloudMode && user ? (
                     <div className={cn(
-                      "flex items-center gap-1",
-                      syncStatus === 'saving' ? "text-amber-500 animate-pulse" : 
-                      syncStatus === 'synced' ? "text-emerald-500" : "text-rose-500"
+                      "flex items-center gap-2 px-3 py-1.5 rounded-full transition-all",
+                      syncStatus === 'saving' ? "text-amber-500 bg-amber-500/5 animate-pulse" : 
+                      syncStatus === 'synced' ? "text-emerald-500 bg-emerald-500/10 border border-emerald-500/20" : "text-slate-500 bg-white/5"
                     )}>
                       {syncStatus === 'saving' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cloud className="w-3 h-3" />}
                       <span>
-                        {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'ERRO DE CONEXÃO'}
+                        {syncStatus === 'saving' ? 'SINCRONIZANDO...' : syncStatus === 'synced' ? 'NUVEM ATIVA' : 'SINC. DESATIVADA'}
                       </span>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1 text-slate-400">
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-full text-slate-400 border border-white/5">
                       <FolderSync className="w-3 h-3" />
                       <span>MODO LOCAL</span>
                     </div>

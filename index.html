@@ -1,47 +1,513 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="0; url=https://verdegrana.vercel.app/">
-    <title>Redirecionando para VerdeGrana</title>
+    <title>VerdeGrana - Smart Budget AI</title>
     
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #f4f7f6;
-            color: #333;
-            text-align: center;
+    <!-- Styles: Tailwind CSS 3 CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        emerald: {
+                            500: '#10b981',
+                            600: '#059669',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                }
+            }
         }
-        .loader {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #10b981;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        a { color: #10b981; text-decoration: none; font-weight: bold; }
-    </style>
-
-    <script type="text/javascript">
-        // Redirecionamento via JavaScript como garantia extra
-        window.location.href = "https://verdegrana.vercel.app/";
     </script>
+    
+    <!-- Dependencies (CDN) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide-react@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-chartjs-2@5.2.0/dist/react-chartjs-2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/framer-motion@11.1.7/dist/framer-motion.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://unpkg.com/sonner@1.3.1/dist/index.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/idb@8/build/umd.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=JetBrains+Mono:wght@400;700&display=swap');
+        
+        :root {
+            --font-sans: 'Inter', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: #020617; /* slate-950 */
+            color: white;
+            overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .glass {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        input[type="number"]::-webkit-inner-spin-button, 
+        input[type="number"]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; 
+            margin: 0; 
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        .float { animation: float 6s ease-in-out infinite; }
+    </style>
 </head>
 <body>
-    <div>
-        <div class="loader"></div>
-        <p>O VerdeGrana mudou de endereço para melhor atendê-lo!</p>
-        <p>Se não for redirecionado em instantes, <br>
-           <a href="https://verdegrana.vercel.app/">clique aqui para acessar o novo site</a>.</p>
-    </div>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback, useRef, StrictMode } = React;
+        const { motion, AnimatePresence } = window.Motion || { motion: { div: 'div' }, AnimatePresence: ({children}) => children };
+        const { 
+            LayoutDashboard, ReceiptText, Bot, Settings, Plus, Search, Download, Upload, Trash2, 
+            Edit3, Copy, X, ChevronRight, ChevronLeft, TrendingUp, TrendingDown, Wallet, Tag, 
+            Leaf, LogOut, Monitor, Smartphone, FolderSync, RefreshCw, MoreHorizontal, Home, 
+            FileJson, BarChart2, Share2, ArrowLeft, ArrowRight, UserCheck, Folder, User, 
+            Mail, Ghost, Minus, Undo2, Redo2, ShieldCheck, Cloud, Play, Lock, ArrowDownUp, 
+            Users, Edit2, FileDown 
+        } = window.LucideReact || window.lucide || {};
+        const { Toaster, toast } = window.Sonner || {};
+        const { Bar: ChartBar, Line: ChartLine, Doughnut } = window.ReactChartjs2 || {};
+
+        // --- Configuration ---
+        const SUPABASE_URL = 'https://cigrmsoprnefiwbenbuv.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpZ3Jtc29wcm5lZml3YmVuYnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4MTM0ODIsImV4cCI6MjA5NDM4OTQ4Mn0.C_njZ0VD_qwKnGGgEcaBUy9Qm0xXbtia1inucnmqckg';
+
+        let supabase = null;
+        try {
+            if (window.supabase) {
+                supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            }
+        } catch (e) {
+            console.error("Supabase fail:", e);
+        }
+
+        // --- Utils ---
+        const cn = (...classes) => classes.filter(Boolean).join(' ');
+
+        const formatCurrency = (val) => {
+            return new Intl.NumberFormat('pt-BR', {
+                style: 'currency',
+                currency: 'BRL',
+            }).format(val || 0);
+        };
+
+        // --- Database (IDB) ---
+        const DB_NAME = 'verdegrana_db';
+        const STORE_NAME = 'app_state';
+        const initDB = async () => {
+            return idb.openDB(DB_NAME, 1, {
+                upgrade(db) {
+                    db.createObjectStore(STORE_NAME);
+                },
+            });
+        };
+        const saveState = async (db, state) => {
+            return db.put(STORE_NAME, state, 'current_state');
+        };
+        const getState = async (db) => {
+            return db.get(STORE_NAME, 'current_state');
+        };
+        const clearState = async (db) => {
+            return db.clear(STORE_NAME);
+        };
+
+        const DEFAULT_CATEGORIES = [
+          'Moradia', 'Alimentação', 'Transporte', 'Educação', 'Lazer', 'Saúde', 'Trabalho', 'Outros'
+        ];
+        
+        const VIBRANT_PALETTE = [
+          '#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#eab308', 
+          '#06b6d4', '#10b981', '#f43f5e', '#6366f1', '#a855f7',
+          '#ef4444', '#14b8a6', '#f59e0b', '#84cc16'
+        ];
+
+        // Register Chart.js Components
+        if (window.Chart) {
+          const {
+            CategoryScale, LinearScale, BarElement, PointElement, LineElement, ArcElement, Title, Tooltip, Legend, Filler
+          } = Chart;
+          Chart.register(
+            CategoryScale, LinearScale, BarElement, PointElement, LineElement, ArcElement, Title, Tooltip, Legend, Filler,
+            window.ChartZoom
+          );
+        }
+
+        // --- Sub-Components ---
+        const CategoryDonut = ({ data, colorMode }) => {
+          const chartData = {
+            labels: data.map(d => d.name),
+            datasets: [{
+              data: data.map(d => d.value),
+              backgroundColor: data.map((d, i) => {
+                if (colorMode === 'unique') return VIBRANT_PALETTE[i % VIBRANT_PALETTE.length];
+                const hue = (d.income >= d.expense ? 142 : 350);
+                return `hsla(${hue}, 70%, ${45 + (i % 5) * 7}%, ${0.6 + (i % 3) * 0.1})`;
+              }),
+              borderColor: 'rgba(255,255,255,0.05)',
+              borderWidth: 2,
+            }]
+          };
+
+          return <Doughnut data={chartData} options={{
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: '#0f172a',
+                padding: 12,
+                cornerRadius: 12,
+                callbacks: { label: (ctx) => ` ${formatCurrency(ctx.raw)}` }
+              }
+            },
+            cutout: '70%'
+          }} />;
+        };
+
+        const TimelineChart = ({ data, isPerformance = false, onPointClick, viewMode = 'tudo' }) => {
+          const chartRef = useRef(null);
+          const [activeIndex, setActiveIndex] = useState(null);
+          const [activeData, setActiveData] = useState(null);
+
+          const cumulativeData = useMemo(() => {
+            if (!isPerformance) return [];
+            let sum = 0;
+            return data.map(d => {
+              let val = (viewMode === 'receitas' ? d.income : viewMode === 'despesas' ? d.expense : d.income - d.expense);
+              sum += val;
+              return sum;
+            });
+          }, [data, isPerformance, viewMode]);
+
+          const chartData = useMemo(() => ({
+            labels: data.map(d => d.name),
+            datasets: isPerformance ? [{
+              label: 'Acumulado',
+              data: cumulativeData,
+              fill: true,
+              tension: 0.4,
+              borderColor: (viewMode === 'despesas' ? '#ef4444' : '#10b981'),
+              backgroundColor: viewMode === 'despesas' ? '#ef444433' : '#10b98133',
+              pointRadius: data.map((_, i) => i === activeIndex ? 6 : 0),
+            }] : [
+              { label: 'Receitas', data: data.map(d => d.income), backgroundColor: 'rgba(16, 185, 129, 0.8)', borderRadius: 4 },
+              { label: 'Despesas', data: data.map(d => d.expense), backgroundColor: 'rgba(244, 63, 94, 0.8)', borderRadius: 4 }
+            ]
+          }), [data, activeIndex, isPerformance, cumulativeData, viewMode]);
+
+          return (
+            <div className="w-full h-full relative flex flex-col">
+              {activeData && (
+                 <div className="flex gap-4 mb-4 text-[10px] p-3 bg-slate-900/80 rounded-xl border border-white/5 uppercase font-black">
+                    <span className="text-emerald-400">In: {formatCurrency(activeData.income)}</span>
+                    <span className="text-rose-400">Out: {formatCurrency(activeData.expense)}</span>
+                 </div>
+              )}
+              <div className="flex-1 min-h-0">
+                {isPerformance ? 
+                  <ChartLine ref={chartRef} data={chartData} options={{ responsive: true, maintainAspectRatio: false }} /> : 
+                  <ChartBar ref={chartRef} data={chartData} options={{ responsive: true, maintainAspectRatio: false }} />
+                }
+              </div>
+            </div>
+          );
+        };
+
+        const CategoryDonutSection = ({ data, colorMode, setColorMode, viewMode, setViewMode, title }) => (
+          <div className="flex flex-col h-full uppercase font-black">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg tracking-tighter">{title}</h3>
+              <div className="flex bg-white/5 p-1 rounded-xl text-[8px]">
+                <button onClick={() => setColorMode('unique')} className={cn("px-2 py-1 rounded", colorMode === 'unique' ? "bg-white/10" : "text-slate-500")}>CORES</button>
+                <button onClick={() => setColorMode('flow')} className={cn("px-2 py-1 rounded", colorMode === 'flow' ? "bg-white/10" : "text-slate-500")}>FLUXO</button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-[200px]"><CategoryDonut data={data} colorMode={colorMode} /></div>
+          </div>
+        );
+
+        // --- Main App Component ---
+        function App() {
+            const [bootStage, setBootStage] = useState('syncing');
+            const [user, setUser] = useState(null);
+            const [isCloudMode, setIsCloudMode] = useState(false);
+            const [activeTab, setActiveTab] = useState('reports');
+            const [activeProfile, setActiveProfile] = useState(() => localStorage.getItem('verdegrana_p') || 'Principal');
+            const [transactions, setTransactions] = useState([]);
+            const [categories, setCategories] = useState(DEFAULT_CATEGORIES.map(c => ({ id: c.toLowerCase(), name: c })));
+            const [profilesList, setProfilesList] = useState(['Principal']);
+            const [syncStatus, setSyncStatus] = useState('idle');
+            const [viewMode, setViewMode] = useState('tudo');
+            const [donutColorMode, setDonutColorMode] = useState('unique');
+            const [dateFilter, setDateFilter] = useState({ type: 'all', month: new Date().getMonth() + 1, year: new Date().getFullYear() });
+
+            // Handlers
+            const loadProfileData = async (p) => {
+              setSyncStatus('saving');
+              try {
+                if (isCloudMode && user && supabase) {
+                  const { data } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('profile_name', p);
+                  setTransactions(data?.map(t => ({ id: t.id, date: t.date, desc: t.description, value: t.amount, category: t.category, type: t.type })) || []);
+                }
+                setSyncStatus('synced');
+              } catch (e) { setSyncStatus('error'); }
+            };
+
+            const handleLogout = async () => {
+              if (supabase) await supabase.auth.signOut();
+              localStorage.clear();
+              window.location.reload();
+            };
+
+            // Boot
+            useEffect(() => {
+              const boot = async () => {
+                if (supabase) {
+                  const { data: { session } } = await supabase.auth.getSession();
+                  if (session?.user) {
+                    setUser(session.user);
+                    setIsCloudMode(true);
+                    setBootStage('profile_select');
+                    return;
+                  }
+                }
+                setBootStage('splash');
+              };
+              boot();
+            }, []);
+
+            const stats = useMemo(() => {
+              const inc = transactions.filter(t => t.type === 'entrada').reduce((a, b) => a + b.value, 0);
+              const exp = transactions.filter(t => t.type === 'saída').reduce((a, b) => a + b.value, 0);
+              return { total: inc - exp, inc, exp };
+            }, [transactions]);
+
+            const currentTransactions = useMemo(() => {
+              return transactions.filter(t => {
+                if (viewMode === 'receitas' && t.type !== 'entrada') return false;
+                if (viewMode === 'despesas' && t.type !== 'saída') return false;
+                return true;
+              }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            }, [transactions, viewMode]);
+
+            const handleAddTransaction = (data) => {
+              const newTx = { ...data, id: Date.now().toString() };
+              setTransactions(prev => [newTx, ...prev]);
+              toast.success('Lançamento adicionado!');
+            };
+
+            const handleDeleteTransaction = (id) => {
+              setTransactions(prev => prev.filter(t => t.id !== id));
+              toast.info('Lançamento removido.');
+            };
+
+            const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+            if (bootStage === 'syncing') return <div className="h-screen flex items-center justify-center bg-slate-950"><RefreshCw className="w-12 h-12 text-emerald-500 animate-spin" /></div>;
+
+            if (bootStage === 'splash') return (
+              <div className="h-screen bg-slate-950 flex flex-col items-center justify-center p-8 text-center">
+                <motion.div initial={{ scale: 0.8 }} animate={{ scale: 1 }} className="bg-emerald-500 p-8 rounded-[3rem] mb-8 shadow-2xl shadow-emerald-500/20"><Leaf className="w-16 h-16 text-white" /></motion.div>
+                <h1 className="text-5xl font-black tracking-tighter mb-4">VerdeGrana</h1>
+                <p className="text-slate-500 mb-12">Privacidade financeira leviana.</p>
+                <button onClick={() => setBootStage('profile_select')} className="px-12 py-5 bg-white text-black font-black rounded-full uppercase tracking-widest active:scale-95 transition-all">Começar</button>
+              </div>
+            );
+
+            if (bootStage === 'profile_select') return (
+              <div className="h-screen bg-slate-950 flex flex-col items-center justify-center p-8">
+                <h2 className="text-3xl font-black mb-12">Quem está usando?</h2>
+                <div className="grid grid-cols-2 gap-6">
+                  {profilesList.map(p => (
+                    <button key={p} onClick={() => { setActiveProfile(p); loadProfileData(p); setBootStage('ready'); }} className="aspect-square bg-white/5 border border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 hover:border-emerald-500 transition-all">
+                      <User className="w-8 h-8 text-slate-400" />
+                      <span className="font-bold text-[10px] uppercase">{p}</span>
+                    </button>
+                  ))}
+                  <button className="aspect-square border border-dashed border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 opacity-40"><Plus className="w-6 h-6" /></button>
+                </div>
+              </div>
+            );
+
+            return (
+              <div className="min-h-screen bg-slate-950 text-white flex flex-col">
+                <header className="p-8 flex justify-between items-center max-w-7xl mx-auto w-full">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center"><Leaf className="w-6 h-6" /></div>
+                    <span className="text-2xl font-black tracking-tighter">VerdeGrana</span>
+                  </div>
+                  <button onClick={handleLogout} className="p-3 bg-white/5 rounded-xl hover:bg-rose-500/10 text-slate-500 hover:text-rose-500 transition-all"><LogOut /></button>
+                </header>
+
+                <main className="p-8 max-w-7xl mx-auto w-full space-y-8 flex-1">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-emerald-500 p-8 rounded-[3rem] h-64 flex flex-col justify-between shadow-2xl shadow-emerald-500/20">
+                      <label className="text-[10px] font-black uppercase tracking-[0.3em] opacity-60">Saldo Atual</label>
+                      <h3 className="text-5xl font-black tracking-tighter">{formatCurrency(stats.total)}</h3>
+                    </div>
+                    <div className="bg-slate-900 border border-white/5 p-8 rounded-[3rem] h-64 flex flex-col justify-between">
+                      <label className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Operações</label>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div><p className="text-emerald-400 text-[10px] font-black mb-1">ENTRADAS</p><p className="text-xl font-black">{formatCurrency(stats.inc)}</p></div>
+                        <div><p className="text-rose-400 text-[10px] font-black mb-1">SAÍDAS</p><p className="text-xl font-black">{formatCurrency(stats.exp)}</p></div>
+                      </div>
+                    </div>
+                    <div className="bg-slate-900 border border-white/5 p-8 rounded-[3rem] h-64 flex flex-col justify-between">
+                      <label className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Analytics</label>
+                      <div className="flex items-center gap-3">
+                        <ShieldCheck className="w-8 h-8 text-emerald-500/40" />
+                        <p className="text-xs font-bold uppercase tracking-widest">Proteção Ativa</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {activeTab === 'reports' && (
+                    <div className="grid grid-cols-12 gap-6">
+                      <div className="col-span-12 lg:col-span-8 bg-slate-900 border border-white/5 p-8 rounded-[3rem] h-[500px]">
+                        <TimelineChart data={[{name: 'Set', income: 1200, expense: 800}, {name: 'Out', income: 1500, expense: 900}]} />
+                      </div>
+                      <div className="col-span-12 lg:col-span-4 bg-slate-900 border border-white/5 p-8 rounded-[3rem] h-[500px]">
+                        <CategoryDonutSection title="Categorias" data={[{name: 'Lazer', value: 300, income: 0, expense: 300}]} colorMode={donutColorMode} setColorMode={setDonutColorMode} />
+                      </div>
+                    </div>
+                  )}
+                  
+                  {activeTab === 'transactions' && (
+                    <div className="space-y-6">
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-3xl font-black uppercase tracking-tighter">Lançamentos</h2>
+                            <div className="flex bg-white/5 p-1 rounded-2xl">
+                                <button onClick={() => setViewMode('tudo')} className={cn("px-4 py-2 rounded-xl text-[10px] font-black uppercase", viewMode === 'tudo' ? "bg-white/10" : "text-slate-500")}>Todos</button>
+                                <button onClick={() => setViewMode('receitas')} className={cn("px-4 py-2 rounded-xl text-[10px] font-black uppercase", viewMode === 'receitas' ? "bg-emerald-500/20 text-emerald-400" : "text-slate-500")}>Entradas</button>
+                                <button onClick={() => setViewMode('despesas')} className={cn("px-4 py-2 rounded-xl text-[10px] font-black uppercase", viewMode === 'despesas' ? "bg-rose-500/20 text-rose-500" : "text-slate-500")}>Saídas</button>
+                            </div>
+                        </div>
+                        
+                        <div className="grid gap-4">
+                            {currentTransactions.map(t => (
+                                <div key={t.id} className="bg-slate-900 border border-white/5 p-6 rounded-[2rem] flex items-center justify-between group hover:border-white/10 transition-all">
+                                    <div className="flex items-center gap-6">
+                                        <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center", t.type === 'entrada' ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-500")}>
+                                            {t.type === 'entrada' ? <TrendingUp /> : <TrendingDown />}
+                                        </div>
+                                        <div>
+                                            <p className="font-bold text-white tracking-tight">{t.desc}</p>
+                                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{t.category} • {new Date(t.date).toLocaleDateString('pt-BR')}</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-6">
+                                        <span className={cn("text-xl font-black tracking-tighter", t.type === 'entrada' ? "text-emerald-400" : "text-rose-400")}>
+                                            {t.type === 'entrada' ? '+' : '-'} {formatCurrency(t.value)}
+                                        </span>
+                                        <button onClick={() => handleDeleteTransaction(t.id)} className="p-2 opacity-0 group-hover:opacity-100 hover:bg-rose-500/10 hover:text-rose-500 rounded-xl transition-all"><Trash2 className="w-5 h-5" /></button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                  )}
+                </main>
+
+                <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 glass border border-white/10 px-8 py-4 rounded-[3rem] flex items-center gap-12 shadow-2xl z-50">
+                   <button onClick={() => setActiveTab('reports')} className={cn("p-2", activeTab === 'reports' ? "text-emerald-500" : "text-slate-500")}><LayoutDashboard /></button>
+                   <button onClick={() => setActiveTab('transactions')} className={cn("p-2", activeTab === 'transactions' ? "text-emerald-500" : "text-slate-500")}><ReceiptText /></button>
+                   <button onClick={() => setIsAddModalOpen(true)} className="w-14 h-14 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg hover:scale-110 transition-all shadow-emerald-500/20"><Plus className="w-8 h-8" /></button>
+                   <button onClick={() => setActiveTab('ai')} className={cn("p-2", activeTab === 'ai' ? "text-emerald-500" : "text-slate-500")}><Bot /></button>
+                   <button onClick={() => setActiveTab('settings')} className={cn("p-2", activeTab === 'settings' ? "text-emerald-500" : "text-slate-500")}><Settings /></button>
+                </nav>
+
+                <AnimatePresence>
+                    {isAddModalOpen && (
+                        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center p-0 md:p-6">
+                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl" onClick={() => setIsAddModalOpen(false)} />
+                            <motion.div initial={{ y: 100 }} animate={{ y: 0 }} exit={{ y: 600 }} className="relative w-full max-w-xl bg-slate-900 border-t md:border border-white/10 p-10 rounded-t-[3rem] md:rounded-[3rem] shadow-2xl space-y-8">
+                                <div className="flex justify-between items-center">
+                                    <h2 className="text-3xl font-black uppercase tracking-tighter">Novo Lançamento</h2>
+                                    <button onClick={() => setIsAddModalOpen(false)} className="p-3 bg-white/5 rounded-full hover:bg-white/10 transition-colors"><X/></button>
+                                </div>
+                                <form onSubmit={e => {
+                                    e.preventDefault();
+                                    const fd = new FormData(e.currentTarget);
+                                    handleAddTransaction({
+                                        date: fd.get('date'),
+                                        desc: fd.get('desc'),
+                                        value: parseFloat(fd.get('value')),
+                                        type: fd.get('type'),
+                                        category: fd.get('category') || 'Outros'
+                                    });
+                                    setIsAddModalOpen(false);
+                                }} className="space-y-6">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-black uppercase text-slate-500 ml-2">Data</label>
+                                            <input name="date" required type="date" defaultValue={new Date().toISOString().split('T')[0]} className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl px-6 text-white outline-none focus:border-emerald-500/50 transition-all font-mono" />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-black uppercase text-slate-500 ml-2">Fluxo</label>
+                                            <select name="type" className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl px-6 text-white outline-none focus:border-emerald-500/50 appearance-none">
+                                                <option value="saída">Saída (-)</option>
+                                                <option value="entrada">Entrada (+)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black uppercase text-slate-500 ml-2">Descrição</label>
+                                        <input name="desc" required placeholder="Onde foi?" className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl px-6 text-white outline-none focus:border-emerald-500/50" />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-black uppercase text-slate-500 ml-2">Valor</label>
+                                            <input name="value" required type="number" step="0.01" placeholder="0,00" className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl px-6 text-white outline-none focus:border-emerald-500/50 text-xl font-black" />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-black uppercase text-slate-500 ml-2">Categoria</label>
+                                            <select name="category" className="w-full h-14 bg-white/5 border border-white/5 rounded-2xl px-6 text-white outline-none focus:border-emerald-500/50 appearance-none">
+                                                {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <button type="submit" className="w-full py-6 bg-emerald-600 rounded-3xl font-black text-xl hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-600/30">Confirmar</button>
+                                </form>
+                            </motion.div>
+                        </div>
+                    )}
+                </AnimatePresence>
+
+                <Toaster theme="dark" position="top-right" richColors />
+              </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 {
   "name": "VerdeGrana Pro",
-  "description": "Smart AI-assisted budget management system with BRL currency and hybrid mobile/desktop UI.",
+  "description": "Smart Cloud-First budget management system with Supabase Auth/DB, Netlify Ready, and PT-BR UI.",
   "requestFramePermissions": [],
   "majorCapabilities": ["storage", "ai"]
 }

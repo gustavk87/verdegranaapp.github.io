@@ -6,6 +6,7 @@ const STORE_NAME = 'app_state';
 interface AppData {
   transactions: any[];
   categories: any[];
+  profiles_list?: string[];
   workspaceHandle?: FileSystemDirectoryHandle;
 }
 

@@ -1155,49 +1155,6 @@ export default function App() {
     toast.info('Sessão encerrada.');
   };
 
-  const handleLocalFileLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const content = event.target?.result as string;
-        const data = JSON.parse(content);
-        
-        let txs = [];
-        if (data.transactions && Array.isArray(data.transactions)) {
-          txs = data.transactions;
-        } else if (Array.isArray(data)) {
-          txs = data;
-        }
-        
-        if (data.categories && Array.isArray(data.categories)) {
-          setCategories(data.categories);
-        }
-        
-        setTransactions(txs);
-        setIsCloudMode(false);
-        setIsTrial(false);
-        setIsDemoMode(false);
-        
-        // Determine profile
-        const profiles = Array.from(new Set(txs.map((t: any) => t.profile_name || 'Principal')));
-        if (profiles.length > 1) {
-          setBootStage('profile_select');
-        } else {
-          setActiveProfile(profiles[0] || 'Principal');
-          setBootStage('ready');
-        }
-        
-        toast.success('Arquivo local carregado!');
-      } catch (err) {
-        toast.error('Erro ao ler arquivo. Formato inválido.');
-      }
-    };
-    reader.readAsText(file);
-  };
-
   const handleLocalExport = () => {
     const data = JSON.stringify({ transactions, categories }, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
@@ -1209,9 +1166,70 @@ export default function App() {
     toast.success('Backup local exportado!');
   };
 
+  const handleFileUpload = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e: any) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const content = event.target?.result as string;
+          const data = JSON.parse(content);
+          
+          let txs: Transaction[] = [];
+          if (data.transactions && Array.isArray(data.transactions)) {
+            txs = data.transactions;
+          } else if (Array.isArray(data)) {
+            txs = data;
+          }
+          
+          if (data.categories && Array.isArray(data.categories)) {
+            setCategories(data.categories);
+          }
+          
+          setTransactions(txs);
+          setIsCloudMode(false);
+          setIsTrial(false);
+          setIsDemoMode(false);
+          
+          // Determine profile
+          const profiles = Array.from(new Set(txs.map((t: any) => t.profile_name || 'Principal')));
+          if (profiles.length > 1) {
+            setBootStage('profile_select');
+          } else {
+            setActiveProfile(profiles[0] || 'Principal');
+            setBootStage('ready');
+          }
+          
+          toast.success('Arquivo local carregado!');
+        } catch (err) {
+          toast.error('Erro ao ler arquivo. Formato inválido.');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
   // --- Initial Boot & Persistence ---
   useEffect(() => {
     const boot = async () => {
+      // Module 3: Safe Hydration - Hydrate from local first
+      const savedTxs = localStorage.getItem('verdegrana_data');
+      if (savedTxs) {
+        try {
+          const parsed = JSON.parse(savedTxs);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+             setTransactions(parsed);
+          }
+        } catch (e) {
+          console.error("Erro ao hidratar dados locais:", e);
+        }
+      }
+
       // Module 1: Silent Boot
       if (supabase) {
         try {
@@ -1225,12 +1243,27 @@ export default function App() {
 
             // Module 1: Profile Gateway
             const txs = data.transactions || [];
-            const profiles = Array.from(new Set(txs.map((t: any) => t.profile_name || 'Principal')));
+            
+            // Reconcile: If cloud is empty but local has data, push to cloud
+            if (txs.length === 0 && transactions.length > 0) {
+              await supabase.from('transactions').insert(transactions.map(t => ({
+                id: t.id,
+                user_id: session.user.id,
+                date: t.date,
+                description: t.desc,
+                category: t.category,
+                type: t.type,
+                amount: t.value,
+                profile_name: t.profile_name || 'Principal'
+              })));
+              toast.info('Dados locais sincronizados com a nuvem.');
+            }
+
+            const activeTxs = txs.length > 0 ? txs : transactions;
+            const profiles = Array.from(new Set(activeTxs.map((t: any) => t.profile_name || 'Principal')));
             if (!profiles.includes('Principal')) profiles.push('Principal');
             
-            // Use localStorage if available to skip selection
             const savedProfile = localStorage.getItem('verdegrana_active_profile');
-            
             if (profiles.length > 1 && (!savedProfile || !profiles.includes(savedProfile))) {
               setBootStage('profile_select');
             } else {
@@ -1338,11 +1371,12 @@ export default function App() {
   }, [activeProfile]);
 
   // Calculations & Filters
-  const currentTransactions = useMemo(() => {
-    return transactions.filter(t => {
-      // Profile filter
-      if (t.profile_name !== activeProfile) return false;
+  const profileTransactions = useMemo(() => {
+    return transactions.filter(t => (t.profile_name || 'Principal') === activeProfile);
+  }, [transactions, activeProfile]);
 
+  const currentTransactions = useMemo(() => {
+    return profileTransactions.filter(t => {
       const date = new Date(t.date);
       // High-level filters
       if (viewMode === 'receitas' && t.type !== 'entrada') return false;
@@ -1359,7 +1393,7 @@ export default function App() {
       }
       return false;
     });
-  }, [transactions, dateFilter, viewMode]);
+  }, [profileTransactions, dateFilter, viewMode]);
 
 
   const filteredTransactions = useMemo(() => {
@@ -1565,7 +1599,7 @@ export default function App() {
             <button 
               onClick={(e) => {
                 e.stopPropagation();
-                document.getElementById('fileInput')?.click();
+                handleFileUpload();
               }}
               className="flex items-center gap-2 text-slate-500 hover:text-slate-300 font-black text-[10px] uppercase tracking-[0.3em] transition-colors"
             >
@@ -1650,10 +1684,7 @@ export default function App() {
                   </button>
                   <div className="h-px bg-white/5 w-full my-2" />
                   <button 
-                    onClick={() => {
-                       const el = document.getElementById('fileInput');
-                       if (el) el.click();
-                    }}
+                    onClick={handleFileUpload}
                     className="flex items-center justify-center gap-2 text-[10px] text-emerald-500 font-black uppercase tracking-[0.3em] hover:text-white transition-colors"
                   >
                     <Folder className="w-3 h-3" /> Carregar Ficheiro Local (.json)
@@ -1771,14 +1802,6 @@ export default function App() {
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-200 flex flex-col select-none touch-none">
       <Toaster position="top-right" theme="dark" richColors />
-      <input 
-        type="file" 
-        id="fileInput"
-        ref={localFileRef} 
-        onChange={handleLocalFileLoad} 
-        accept=".json" 
-        style={{ display: 'none' }}
-      />
 
       {/* CONTENT AREA */}
       <main 
@@ -1952,7 +1975,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {transactions.length === 0 ? (
+                {profileTransactions.length === 0 ? (
                   <div className="col-span-12 flex flex-col items-center justify-center p-12 text-center w-full min-h-[400px]">
                     <div className="w-32 h-32 bg-slate-900 rounded-[3rem] flex items-center justify-center mb-8 border border-white/5 mx-auto">
                       <Leaf className="w-12 h-12 text-slate-500" />
@@ -2294,6 +2317,13 @@ export default function App() {
                     </p>
                   </div>
                   <div className="w-full space-y-3">
+                    <div className="p-4 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl text-left flex items-center gap-3 mb-2">
+                       <User className="w-4 h-4 text-emerald-500" />
+                       <div className="leading-none">
+                         <p className="text-[9px] font-black text-emerald-500 uppercase">Perfil Alvo</p>
+                         <p className="text-white text-xs font-bold">{activeProfile}</p>
+                       </div>
+                    </div>
                     <button 
                       onClick={() => {
                         const prompt = `You are a professional financial data parser. 
@@ -2404,8 +2434,8 @@ TOP CATEGORIAS DE GASTO:
 ${topCats || 'Sem dados suficientes'}
 
 MÉTRICAS:
-- Total Transactions: ${transactions.length}
-- Média por Transação: ${formatCurrency(stats.expenses / (transactions.filter(t => t.type === 'saída').length || 1))}
+- Total Transactions: ${profileTransactions.length}
+- Média por Transação: ${formatCurrency(stats.expenses / (profileTransactions.filter(t => t.type === 'saída').length || 1))}
 
 SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomendações de investimentos baseados nestes dados.`;
                         navigator.clipboard.writeText(reportPrompt);
@@ -2883,8 +2913,8 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                
                <div className="grid grid-cols-2 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                   {categories.map(cat => {
-                    const totalExp = transactions.filter(t => t.category === cat.name && t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
-                    const totalInc = transactions.filter(t => t.category === cat.name && t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
+                    const totalExp = profileTransactions.filter(t => t.category === cat.name && t.type === 'saída').reduce((acc, t) => acc + t.value, 0);
+                    const totalInc = profileTransactions.filter(t => t.category === cat.name && t.type === 'entrada').reduce((acc, t) => acc + t.value, 0);
                     const isSelected = analyticsConfig.compareCategories.includes(cat.name);
                     
                     return (

@@ -44,7 +44,8 @@ import {
   Lock,
   ArrowDownUp,
   Users,
-  Edit2
+  Edit2,
+  FileDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
@@ -847,12 +848,81 @@ export default function App() {
   const [wipeConfirmText, setWipeConfirmText] = useState('');
 
   // Folder Sync Logic
-  const saveToFolder = async (txs: Transaction[], cats: Category[]) => {
+  const syncProfilesFromFolder = async (handle: any) => {
+    const profiles: string[] = [];
+    try {
+      // @ts-ignore
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'file' && entry.name.endsWith('.json')) {
+          profiles.push(entry.name.replace('.json', ''));
+        }
+      }
+    } catch (e) {
+      console.error("Erro ao escanear pasta:", e);
+    }
+    const finalProfiles = profiles.length > 0 ? profiles : ['Principal'];
+    setProfilesList(finalProfiles);
+    return finalProfiles;
+  };
+
+  const syncProfilesFromCloud = async (userId: string) => {
+    if (!supabase) return ['Principal'];
+    try {
+      const { data, error } = await supabase.from('profiles').select('name').eq('user_id', userId);
+      if (error) throw error;
+      
+      const profiles = data.map((p: any) => p.name);
+      if (profiles.length === 0 || !profiles.includes('Principal')) {
+        const { error: insError } = await supabase.from('profiles').insert([{ name: 'Principal', user_id: userId }]);
+        if (!insError && !profiles.includes('Principal')) profiles.push('Principal');
+      }
+      setProfilesList(profiles);
+      return profiles;
+    } catch (e) {
+      console.error("Erro ao sincronizar perfis cloud:", e);
+      return ['Principal'];
+    }
+  };
+
+  const loadProfileData = async (profileName: string) => {
+    setSyncStatus('saving');
+    try {
+      if (isCloudMode && user && supabase) {
+        const { data, error } = await supabase.from('transactions').select('*').eq('user_id', user.id).eq('profile_name', profileName);
+        if (error) throw error;
+        setTransactions(data.map((t: any) => ({
+          id: t.id,
+          date: t.date,
+          desc: t.description,
+          value: t.amount,
+          category: t.category,
+          type: t.type,
+          profile_name: t.profile_name
+        })));
+      } else if (folderHandle) {
+        try {
+          const fileHandle = await folderHandle.getFileHandle(`${profileName}.json`);
+          const file = await fileHandle.getFile();
+          const content = await file.text();
+          const data = JSON.parse(content);
+          if (data.transactions) setTransactions(data.transactions);
+        } catch (e) {
+          setTransactions([]); // New profile or file missing
+        }
+      }
+      setSyncStatus('synced');
+    } catch (e) {
+      console.error("Erro ao carregar dados do perfil:", e);
+      setSyncStatus('error');
+    }
+  };
+
+  const saveToFolder = async (profileName: string, txs: Transaction[], cats: Category[]) => {
     if (!folderHandle) return;
     try {
-      const fileHandle = await folderHandle.getFileHandle('verdegrana_data.json', { create: true });
+      const fileHandle = await folderHandle.getFileHandle(`${profileName}.json`, { create: true });
       const writable = await fileHandle.createWritable();
-      const content = JSON.stringify({ transactions: txs, categories: cats, profilesList }, null, 2);
+      const content = JSON.stringify({ transactions: txs, categories: cats }, null, 2);
       await writable.write(content);
       await writable.close();
       setSyncStatus('synced');
@@ -867,34 +937,23 @@ export default function App() {
       // @ts-ignore
       const handle = await window.showDirectoryPicker();
       setFolderHandle(handle);
+      
+      const profiles = await syncProfilesFromFolder(handle);
       setIsFolderTutorialOpen(false);
-      
-      // Try to read existing file if any
-      try {
-        const fileHandle = await handle.getFileHandle('verdegrana_data.json');
-        const file = await fileHandle.getFile();
-        const content = await file.text();
-        const data = JSON.parse(content);
-        
-        if (data.transactions) setTransactions(data.transactions);
-        if (data.categories) setCategories(data.categories);
-        if (data.profilesList) setProfilesList(data.profilesList);
-        
-        toast.success('Pasta vinculada e dados sincronizados!');
-      } catch (e) {
-        // File doesn't exist, create it later
-        toast.success('Pasta vinculada! Criando arquivo de sincronização...');
-        saveToFolder(transactions, categories);
-      }
-      
       setIsCloudMode(false);
       setIsTrial(false);
-      setBootStage('profile_select');
+      
+      if (profiles.length > 0) {
+        setBootStage('profile_select');
+      } else {
+        setActiveProfile('Principal');
+        setBootStage('ready');
+      }
+      
+      toast.success('Pasta vinculada com sucesso!');
     } catch (e: any) {
       if (e.name === 'AbortError') return;
-      alert("Seu navegador não suporta sincronização de pasta ou ocorreu um erro. Usando Modo Trial (Local).");
-      setIsTrial(true);
-      setBootStage('profile_select');
+      toast.error("Falha ao selecionar pasta.");
     }
   };
 
@@ -1014,11 +1073,7 @@ export default function App() {
   }, []);
 
    const handlePresentationTouch = () => {
-    if (user?.id) {
-      setBootStage('welcome');
-    } else {
-      setBootStage('auth');
-    }
+    setBootStage(user?.id || folderHandle ? 'profile_select' : 'auth');
   };
 
   const handleAuth = async (mode: 'login' | 'signup') => {
@@ -1045,19 +1100,9 @@ export default function App() {
           alert("Conta criada com sucesso! Agora você já pode clicar em 'Entrar'. (Se o Supabase exigir, verifique a caixa de entrada do seu email).");
         } else {
           toast.success('BEM-VINDO DE VOLTA!');
-          
-          const cloud = await fetchCloudData(data.user.id);
           setIsTrial(false);
-          
-          const profiles = Array.from(new Set((cloud.transactions || []).map((t: any) => t.profile_name || 'Principal')));
-          if (!profiles.includes('Principal')) profiles.push('Principal');
-
-          if (profiles.length > 1) {
-            setBootStage('profile_select');
-          } else {
-            setActiveProfile(profiles[0]);
-            setBootStage('ready');
-          }
+          await syncProfilesFromCloud(data.user.id);
+          setBootStage('profile_select');
         }
       }
     } catch (e: any) {
@@ -1076,26 +1121,92 @@ export default function App() {
   }, [profilesList]);
 
   // --- Handlers ---
-  const handleRenameProfile = async (oldName: string, newName: string) => {
-    if (!newName || profilesList.includes(newName)) {
-      toast.error('Nome inválido ou já existente.');
+  const handleRenameProfile = async (p: string) => {
+    const newName = prompt(`Novo nome para o perfil "${p}":`, p);
+    if (!newName || newName.trim() === p || profilesList.includes(newName.trim())) {
+      if (newName && newName.trim() !== p) toast.error('Nome inválido ou já existente.');
       return;
     }
 
-    setProfilesList(prev => prev.map(p => p === oldName ? newName : p));
-    if (activeProfile === oldName) setActiveProfile(newName);
-
-    setTransactions(prev => {
-      const next = prev.map(t => t.profile_name === oldName ? { ...t, profile_name: newName } : t);
-      pushToHistory(next);
-      return next;
-    });
+    const cleanNewName = newName.trim();
 
     if (isCloudMode && user && supabase) {
-      await supabase.from('transactions').update({ profile_name: newName }).eq('user_id', user.id).eq('profile_name', oldName);
+      await supabase.from('profiles').update({ name: cleanNewName }).eq('user_id', user.id).eq('name', p);
+      await supabase.from('transactions').update({ profile_name: cleanNewName }).eq('user_id', user.id).eq('profile_name', p);
+    } else if (folderHandle) {
+      try {
+        const oldFile = await folderHandle.getFileHandle(`${p}.json`);
+        const file = await oldFile.getFile();
+        const content = await file.text();
+        
+        const newFile = await folderHandle.getFileHandle(`${cleanNewName}.json`, { create: true });
+        const writable = await newFile.createWritable();
+        await writable.write(content);
+        await writable.close();
+        
+        await folderHandle.removeEntry(`${p}.json`);
+      } catch (e) {
+        console.error("Erro ao renomear arquivo local:", e);
+      }
     }
-    
-    toast.success(`Perfil ${oldName} renomeado para ${newName}`);
+
+    setProfilesList(prev => prev.map(item => item === p ? cleanNewName : item));
+    if (activeProfile === p) setActiveProfile(cleanNewName);
+    toast.success(`Perfil renomeado para ${cleanNewName}`);
+  };
+
+  const handleImportProfile = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e: any) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const content = event.target?.result as string;
+          const data = JSON.parse(content);
+          const name = prompt('Dê um nome para este perfil importado:');
+          if (!name) return;
+          const cleanName = name.trim();
+          if (profilesList.includes(cleanName)) {
+            toast.error('Este perfil já existe.');
+            return;
+          }
+
+          let txs: Transaction[] = [];
+          if (data.transactions) txs = data.transactions;
+          else if (Array.isArray(data)) txs = data;
+
+          if (isCloudMode && user && supabase) {
+            await supabase.from('profiles').insert([{ name: cleanName, user_id: user.id }]);
+            await supabase.from('transactions').insert(txs.map(t => ({
+              id: t.id || crypto.randomUUID(),
+              user_id: user.id,
+              date: t.date,
+              description: t.desc || t.description,
+              category: t.category,
+              type: t.type,
+              amount: t.value || t.amount,
+              profile_name: cleanName
+            })));
+          } else if (folderHandle) {
+            const fileHandle = await folderHandle.getFileHandle(`${cleanName}.json`, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(JSON.stringify({ transactions: txs, categories }, null, 2));
+            await writable.close();
+          }
+
+          setProfilesList(prev => [...prev, cleanName]);
+          toast.success(`Perfil ${cleanName} importado com sucesso!`);
+        } catch (err) {
+          toast.error('Arquivo inválido.');
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
   };
 
   const handleCloudMigration = async () => {
@@ -1368,81 +1479,65 @@ export default function App() {
   // --- Initial Boot & Persistence ---
   useEffect(() => {
     const boot = async () => {
-      // Module 3: Safe Hydration - Hydrate from local first
-      const savedTxs = localStorage.getItem('verdegrana_data');
-      if (savedTxs) {
-        try {
-          const parsed = JSON.parse(savedTxs);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-             setTransactions(parsed);
-          }
-        } catch (e) {
-          console.error("Erro ao hidratar dados locais:", e);
-        }
-      }
+      try {
+        const db = await initDB();
+        const persisted = await getState(db);
 
-      // Module 1: Silent Boot
-      if (supabase) {
-        try {
+        // 1. Check for Cloud Session
+        if (supabase) {
           const { data: { session } } = await supabase.auth.getSession();
           if (session?.user) {
             setUser(session.user);
             setIsCloudMode(true);
-            setSyncStatus('saving');
-            const data = await fetchCloudData(session.user.id);
-            setSyncStatus('synced');
-
-            // Module 1: Profile Gateway
-            const txs = data.transactions || [];
-            
-            // Reconcile: If cloud is empty but local has data, push to cloud
-            if (txs.length === 0 && transactions.length > 0) {
-              await supabase.from('transactions').insert(transactions.map(t => ({
-                id: t.id,
-                user_id: session.user.id,
-                date: t.date,
-                description: t.desc,
-                category: t.category,
-                type: t.type,
-                amount: t.value,
-                profile_name: t.profile_name || 'Principal'
-              })));
-              toast.info('Dados locais sincronizados com a nuvem.');
-            }
-
-            const activeTxs = txs.length > 0 ? txs : transactions;
-            const profiles = Array.from(new Set(activeTxs.map((t: any) => t.profile_name || 'Principal')));
-            if (!profiles.includes('Principal')) profiles.push('Principal');
-            
-            const savedProfile = localStorage.getItem('verdegrana_active_profile');
-            if (profiles.length > 1 && (!savedProfile || !profiles.includes(savedProfile))) {
-              setBootStage('profile_select');
-            } else {
-              setActiveProfile(savedProfile || profiles[0]);
-              setBootStage('ready');
-            }
-          } else {
-            setBootStage('splash');
+            await syncProfilesFromCloud(session.user.id);
+            setBootStage('profile_select');
+            return;
           }
-          
-          supabase.auth.onAuthStateChange((_event: any, session: any) => {
-            if (session?.user) {
-              setUser(session.user);
-              setIsCloudMode(true);
-            } else {
-              setUser(null);
-              setIsCloudMode(false);
-              setSyncStatus('idle');
-            }
-          });
-        } catch (e) {
-          console.error("Erro no boot de autenticação:", e);
-          setBootStage('splash');
         }
-      } else {
+
+        // 2. Check for Local Folder
+        if (persisted?.workspaceHandle) {
+          try {
+            const permission = await persisted.workspaceHandle.queryPermission({ mode: 'readwrite' });
+            if (permission === 'granted') {
+              setFolderHandle(persisted.workspaceHandle);
+              await syncProfilesFromFolder(persisted.workspaceHandle);
+              setBootStage('profile_select');
+              return;
+            } else {
+              // Permission lost or needs re-grant (standard web safety)
+              // We'll keep it in state but boot to auth for fresh start
+              toast.info('Seus arquivos locais estão bloqueados. Conecte a pasta novamente nas configurações.');
+            }
+          } catch (e) {
+            console.error("Erro ao verificar permissão da pasta:", e);
+          }
+        }
+
+        // 3. Hydrate categories and profiles from local (fallback)
+        if (persisted?.categories) setCategories(persisted.categories);
+        if (persisted?.profiles_list) setProfilesList(persisted.profiles_list);
+
+        setBootStage('splash');
+      } catch (e) {
+        console.error("Erro no boot:", e);
         setBootStage('splash');
       }
     };
+    
+    // Auth change listener
+    if (supabase) {
+      supabase.auth.onAuthStateChange((event: any, session: any) => {
+        if (event === 'SIGNED_OUT') {
+          handleLogout();
+        } else if (session?.user) {
+          setUser(session.user);
+          setIsCloudMode(true);
+          syncProfilesFromCloud(session.user.id).then(() => setBootStage('profile_select'));
+        }
+      });
+    }
+
     boot();
   }, []);
 
@@ -1470,9 +1565,9 @@ export default function App() {
   useEffect(() => {
     if (bootStage !== 'ready') return;
     if (folderHandle) {
-      saveToFolder(transactions, categories);
+      saveToFolder(activeProfile, transactions, categories);
     }
-  }, [transactions, categories, profilesList, folderHandle, bootStage]);
+  }, [transactions, categories, folderHandle, bootStage, activeProfile]);
 
   // Debounced Cloud Sync for Metadata
   useEffect(() => {
@@ -1483,7 +1578,25 @@ export default function App() {
     }, 3000);
 
     return () => clearTimeout(timeout);
-  }, [categories, profilesList, user?.id, bootStage, isDemoMode]);
+  }, [categories, user?.id, bootStage, isDemoMode]);
+
+  // Persistent IDB state
+  useEffect(() => {
+    const persist = async () => {
+      try {
+        const db = await initDB();
+        await saveState(db, {
+          transactions,
+          categories,
+          profiles_list: profilesList,
+          workspaceHandle: folderHandle
+        });
+      } catch (e) {
+        console.error("Erro ao persistir estado no IDB:", e);
+      }
+    };
+    persist();
+  }, [transactions, categories, profilesList, folderHandle]);
 
   // --- Handlers ---
   const processImport = useCallback((data: any[]) => {
@@ -1890,7 +2003,7 @@ export default function App() {
                   </button>
                   <div className="h-px bg-white/5 w-full my-2" />
                   <button 
-                    onClick={() => { setIsTrial(true); setIsDemoMode(true); setTransactions([]); setBootStage('welcome'); }}
+                    onClick={() => { setIsTrial(true); setIsDemoMode(true); setTransactions([]); setBootStage('profile_select'); }}
                     className="text-[10px] text-slate-600 font-black uppercase tracking-[0.3em] hover:text-slate-400"
                   >
                     Continuar como Visitante (Modo Trial)
@@ -1928,7 +2041,8 @@ export default function App() {
                 key={p}
                 onClick={async () => {
                   setActiveProfile(p);
-                  setBootStage('welcome');
+                  await loadProfileData(p);
+                  setBootStage('ready');
                   toast.success(`Bem-vindo, ${p}!`);
                 }}
                 className="aspect-square bg-white/5 border border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 hover:bg-emerald-500/10 hover:border-emerald-500/30 transition-all active:scale-95 group"
@@ -1944,14 +2058,21 @@ export default function App() {
               onClick={async () => {
                 const name = prompt('Nome do novo perfil:');
                 if (name) {
-                  if (profilesList.includes(name)) {
+                  const cleanName = name.trim();
+                  if (profilesList.includes(cleanName)) {
                     toast.error('Este perfil já existe.');
                     return;
                   }
-                  setProfilesList(prev => [...prev, name]);
-                  setActiveProfile(name);
-                  setBootStage('welcome');
-                  toast.success(`Perfil ${name} criado!`);
+                  
+                  if (isCloudMode && user && supabase) {
+                    await supabase.from('profiles').insert([{ name: cleanName, user_id: user.id }]);
+                  }
+                  
+                  setProfilesList(prev => [...prev, cleanName]);
+                  setActiveProfile(cleanName);
+                  setTransactions([]); // New profile starts empty
+                  setBootStage('ready');
+                  toast.success(`Perfil ${cleanName} criado!`);
                 }
               }}
               className="aspect-square bg-emerald-500/5 border border-dashed border-emerald-500/30 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 hover:bg-emerald-500/10 transition-all active:scale-95"
@@ -2781,23 +2902,37 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                         <p className="text-slate-500 text-xs">Isolamento total de orçamentos e históricos</p>
                       </div>
                     </div>
-                    <button 
-                      onClick={() => {
-                        const name = prompt('Nome do novo perfil:');
-                        if (name && name.trim()) {
-                          if (profilesList.includes(name.trim())) {
-                            toast.error('Este perfil já existe.');
-                            return;
+                    <div className="flex gap-2">
+                       <button 
+                        onClick={handleImportProfile}
+                        className="p-4 bg-white/5 text-slate-400 rounded-2xl hover:bg-white/10 transition-all flex items-center gap-2"
+                        title="Importar Perfil (.json)"
+                      >
+                        <FileDown className="w-5 h-5" />
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const name = prompt('Nome do novo perfil:');
+                          if (name && name.trim()) {
+                            if (profilesList.includes(name.trim())) {
+                              toast.error('Este perfil já existe.');
+                              return;
+                            }
+                            
+                            if (isCloudMode && user && supabase) {
+                              supabase.from('profiles').insert([{ name: name.trim(), user_id: user.id }]);
+                            }
+                            
+                            setProfilesList(p => [...p, name.trim()]);
+                            setActiveProfile(name.trim());
+                            toast.success(`Perfil "${name}" criado!`);
                           }
-                          setProfilesList(p => [...p, name.trim()]);
-                          setActiveProfile(name.trim());
-                          toast.success(`Perfil "${name}" criado!`);
-                        }
-                      }}
-                      className="p-4 bg-emerald-500/10 text-emerald-500 rounded-2xl hover:bg-emerald-500 hover:text-white transition-all flex items-center gap-2"
-                    >
-                      <Plus className="w-5 h-5" />
-                    </button>
+                        }}
+                        className="p-4 bg-emerald-500/10 text-emerald-500 rounded-2xl hover:bg-emerald-500 hover:text-white transition-all flex items-center gap-2"
+                      >
+                        <Plus className="w-5 h-5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2829,10 +2964,22 @@ SOLICITAÇÃO: Forneça uma análise crítica, insights de economia e recomenda�
                                 </button>
                                 {profilesList.length > 1 && (
                                   <button 
-                                    onClick={() => {
+                                    onClick={async () => {
                                       if (confirm(`Excluir o perfil "${p}"? Todos os dados vinculados serão inacessíveis.`)) {
-                                        setProfilesList(prev => prev.filter(item => item !== p));
-                                        if (activeProfile === p) setActiveProfile(profilesList.find(item => item !== p) || 'Principal');
+                                        if (isCloudMode && user && supabase) {
+                                          await supabase.from('profiles').delete().eq('user_id', user.id).eq('name', p);
+                                          await supabase.from('transactions').delete().eq('user_id', user.id).eq('profile_name', p);
+                                        } else if (folderHandle) {
+                                          try { await folderHandle.removeEntry(`${p}.json`); } catch(e) {}
+                                        }
+                                        
+                                        const newList = profilesList.filter(item => item !== p);
+                                        setProfilesList(newList);
+                                        if (activeProfile === p) {
+                                           const next = newList[0] || 'Principal';
+                                           setActiveProfile(next);
+                                           await loadProfileData(next);
+                                        }
                                       }
                                     }}
                                     className="p-2 bg-rose-500/10 hover:bg-rose-500/20 rounded-lg text-rose-500"
